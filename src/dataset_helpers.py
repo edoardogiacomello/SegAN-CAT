@@ -187,16 +187,19 @@ def pack_dataset(dataset_name):
         print("Samples written to {}")
 
 
-def load_dataset(name, batch_size=32, cache=True, buffer_size=2048, interleave=1, cast_to=tf.float32, only_nonempty_labels=True):
+def load_dataset(name, mri_type=None, batch_size=32, cache=True, buffer_size=2048, interleave=1, cast_to=tf.float32, only_nonempty_labels=True, clip_labels_to=0.0, take_only=None, shuffle=True):
     '''
     Load a tensorflow dataset <name> (see definition in dataset_helpers).
     :param name: Name of the dataset
+    :param mri_type: MRI sequencing to include in the dataset
     :param batch_size: batch size of the returned tensors
     :param cache: [True] wether to cache data in main memory
     :param buffer_size: Buffer size used to prefetch data
     :param interleave: If true, subsequent calls to the iterator will generate <interleave> equal batches. Eg. if 3, batch returned will be [A A A B B B ....]
     :param cast_to: [tf.float32] cast image data to this dtype
     :param only_nonempty_labels: [True] If true, filters all the samples that have a completely black (0.0) label map (segmentation)
+    :param clip_labels_to: [0.0] If > 0, clips all the segmentation labels to the provided value. eg. providing a 1 yould produce a segmentation with only 0 and 1 values
+    :param take_only: [None] If > 0, only returns <take_only> samples from the given dataset before starting a new iteration.
     :return:
     '''
     path = '../datasets/{}.tfrecords'.format(name)
@@ -208,42 +211,22 @@ def load_dataset(name, batch_size=32, cache=True, buffer_size=2048, interleave=1
         shape = [parsed['mri_x_dimension'], parsed['mri_y_dimension'], 1]
         parsed['mri'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed['mri_raw'], tf.uint16), shape=shape), dtype=cast_to)
         parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed['seg_raw'], tf.uint16), shape=shape), dtype=cast_to)
+        parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to) if clip_labels_to else parsed['seg']
         return parsed
+
     parsed_dataset = dataset.map(parse_sample, num_parallel_calls=os.cpu_count())
     parsed_dataset = parsed_dataset.filter(lambda x: tf.reduce_any(tf.greater(x['seg'], 0.0))) if only_nonempty_labels else parsed_dataset
+    parsed_dataset = parsed_dataset.filter(lambda x: tf.equal(x['mri_type'], mri_type)) if mri_type is not None else parsed_dataset
+    parsed_dataset = parsed_dataset.take(take_only) if take_only is not None else parsed_dataset
     parsed_dataset = parsed_dataset.cache() if cache else parsed_dataset
     parsed_dataset = parsed_dataset.prefetch(buffer_size)
     #parsed_dataset = parsed_dataset.apply(tf.data.experimental.shuffle_and_repeat(buffer_size))
-    parsed_dataset = parsed_dataset.shuffle(buffer_size, reshuffle_each_iteration=True)
+    parsed_dataset = parsed_dataset.shuffle(buffer_size, reshuffle_each_iteration=True) if shuffle else parsed_dataset
     parsed_dataset = parsed_dataset.batch(batch_size)
 
     if interleave > 1:
         parsed_dataset = parsed_dataset.interleave(lambda x: tf.data.Dataset.from_tensors(x).repeat(interleave), cycle_length=os.cpu_count(), block_length=interleave, num_parallel_calls=os.cpu_count())
     return parsed_dataset
-
-def test():
-    import tensorflow as tf
-    train_dataset = load_dataset('brats2015-Train-all', batch_size=32, interleave=3)
-    iterator = tf.data.Iterator.from_structure(train_dataset.output_types, train_dataset.output_shapes)
-    next_batch = iterator.get_next()
-    # Initializers for the iterators
-    enable_train_dataset = iterator.make_initializer(train_dataset)
-    with tf.Session() as sess:
-        sess.run(enable_train_dataset)
-        for i in range(10000):
-            batch = sess.run(next_batch)['z_slice']
-            print(i)
-
-def testshuffle():
-    d = tf.data.Dataset().range(10)
-    d = d.shuffle(20)
-    i = d.make_one_shot_iterator().get_next()
-    with tf.Session() as s:
-        while True:
-            try:
-                print (s.run(i))
-            except:
-                break
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 import tensorflow as tf
 import time
 class SeganViewer():
-    def __init__(self, segan, sess, output_folder):
+    def __init__(self, segan, sess, output_folder, max_img_outputs=12):
         '''
         Helper for Tensorboard visualization and logging the metrics on disk
         :param segan:
@@ -16,6 +16,7 @@ class SeganViewer():
                           'test':[], # Shows the images during testing (slower)
                           'predict':[], # Shows the images during prediction. Only requires an input MRI
                           }
+
         # Creating summaries to show
         loss_c = tf.summary.scalar('loss_c', self.segan.layers['train']['loss_c'])
         loss_s = tf.summary.scalar('loss_s', self.segan.layers['train']['loss_s'])
@@ -23,10 +24,10 @@ class SeganViewer():
         sensitivity = tf.summary.scalar('sensitivity', self.segan.layers['eval']['sensitivity'])
         specificity = tf.summary.scalar('specificity', self.segan.layers['eval']['specificity'])
 
-        mri_input = tf.summary.image('mri_input', self.segan.layers['in']['mri'])
-        seg_input = tf.summary.image('seg_input', self.segan.layers['in']['seg'])
-        s_output = tf.summary.image('s_output', self.segan.layers['S']['out'])
-        d_input = tf.summary.image('mri_masked', self.segan.layers['C_s']['mri_masked'])
+        mri_input = tf.summary.image('mri_input', self.segan.layers['in']['mri'], max_outputs=max_img_outputs)
+        seg_input = tf.summary.image('seg_input', self.segan.layers['in']['seg'], max_outputs=max_img_outputs)
+        s_output = tf.summary.image('s_output', self.segan.layers['S']['out'], max_outputs=max_img_outputs)
+        d_input = tf.summary.image('mri_masked', self.segan.layers['C_s']['mri_masked'], max_outputs=max_img_outputs)
 
         # Defining which summaries to calculate for each case
 

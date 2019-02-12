@@ -20,7 +20,6 @@ class SegAN():
                         'checkpoint_folder': '../models/SegAN/{}_model/'.format(run_name),
                         'visualize_folder': '../models/SegAN/{}_visualize/'.format(run_name),
                         'threshold': 0.5, # Treshold for a segmentation to be considered as 1 or 0
-                        'max_labels': 1.0 # Clip all the segmentation pixels to this value
                        }
         # Define a dictionary that will contain the layers for faster access
         self.layers = {'in':{}, # Inputs to the network
@@ -60,7 +59,7 @@ class SegAN():
         # Defining optimizer
         self.define_optimizer()
         # Defining the saver. Every tensor defined afterwards is not included in the model checkpoint
-        self.saver = tf.train.Saver(keep_checkpoint_every_n_hours=1, max_to_keep=0)
+        self.saver = tf.train.Saver(keep_checkpoint_every_n_hours=1, max_to_keep=100)
 
     def _conv2d(self, input, kern_size, filters, strides, padding='SAME', name=None, clip=False):
         def get_filters(shape, clip):
@@ -144,10 +143,11 @@ class SegAN():
             x = tf.reshape(x, [self.params['batch_size'], -1])
             y = tf.reshape(y, [self.params['batch_size'], -1])
             intersection = tf.reduce_sum(tf.multiply(x, y))
-            return tf.divide(2. * intersection + epsilon, tf.reduce_sum(x) + tf.reduce_sum(y) + epsilon, name="dice_loss")
+            dice = tf.divide(2. * intersection + epsilon, tf.reduce_sum(x) + tf.reduce_sum(y) + epsilon, name="dice_score")
+            return 1 - dice/self.params['batch_size']  # from  github.com/YuanXue1993/SegAN/blob/master/train.py
 
-        self.layers['train']['loss_c'] = tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out']))
-        self.layers['train']['loss_s'] = tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out'])) + smooth_dice_loss(self.layers['in']['seg'], self.layers['S']['out'])
+        self.layers['train']['loss_c'] =  tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out'])) + smooth_dice_loss(self.layers['in']['seg'], self.layers['S']['out'])
+        self.layers['train']['loss_s'] = -tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out']))
 
     def define_evaluation_metrics(self):
         # Boolean segmentation outputs
@@ -190,18 +190,13 @@ class SegAN():
         :return:
         '''
         network_loaded = False
-        self.layers['train']['global_step'] = 0
         latest_checkpoint = tf.train.latest_checkpoint(self.params['checkpoint_folder'])
         if latest_checkpoint is None:
-            # No networks have been saved
+            # No networks have been saved before
             print("No model found, creating a new one...")
             self.layers['train']['global_step'] = 0
-            self.layers['train']['global_step_tensor'] = tf.Variable(self.layers['train']['global_step'],
-                                                                 name='global_step')
         else:
             self.saver.restore(sess, latest_checkpoint)
-            with open(self.params['checkpoint_folder'] + 'global_step', 'r') as gsin:
-                self.layers['train']['global_step'] = int(gsin.read())
             network_loaded=True
             print("Loaded model from {} at global step {}".format(self.params['checkpoint_folder'], self.layers['train']['global_step']))
         return network_loaded
@@ -211,6 +206,7 @@ class SegAN():
             with open(self.params['checkpoint_folder'] + 'global_step', 'r') as gsin:
                 self.layers['train']['global_step'] = int(gsin.read())
         except:
+            print("Failed to load last globalstep. Initializing a new run...")
             self.layers['train']['global_step'] = 0
         self.layers['train']['global_step_tensor'] = tf.Variable(self.layers['train']['global_step'], name='global_step')
 
@@ -219,6 +215,8 @@ class SegAN():
         with open(self.params['checkpoint_folder']+'global_step', 'w') as gsout:
             self.layers['train']['global_step'] = sess.run(self.layers['train']['global_step_tensor'])
             gsout.write(str(self.layers['train']['global_step']))
+
+        print("Saving at global step {}".format(self.layers['train']['global_step']))
         self.saver.save(sess, self.params['checkpoint_folder']+'model.ckpt', global_step=self.layers['train']['global_step_tensor'])
 
 
@@ -228,14 +226,26 @@ class SegAN():
         # NOTICE: Dataset has to be interleaved with as many samples as we intend to call sess.run() with the same data,
         # because every time we call .run the iterator gets incremented
         # The expected behaviour is to call .run for: train_S, train_C, loss_calculation.
-        train_dataset = dh.load_dataset('brats2015-Train-all', batch_size=self.params['batch_size'], interleave=3, cast_to=self.params['dtype'])
-
+        train_dataset = dh.load_dataset('brats2015-Train-all',
+                                        batch_size=self.params['batch_size'],
+                                        mri_type="MR_T1",
+                                        interleave=3,
+                                        cast_to=self.params['dtype'],
+                                        clip_labels_to=1.0)
+        tensorboard_datasets =  dh.load_dataset('brats2015-Train-all',
+                                        batch_size=self.params['batch_size'],
+                                        mri_type="MR_T1",
+                                        cast_to=self.params['dtype'],
+                                        clip_labels_to=1.0,
+                                        take_only=self.params['batch_size'],
+                                        shuffle=False)
         # Define an iterator what works for both training and test datasets
         iterator = tf.data.Iterator.from_structure(train_dataset.output_types, train_dataset.output_shapes)
         next_batch = iterator.get_next()
 
         # Initializers for the iterators
         enable_train_dataset = iterator.make_initializer(train_dataset)
+        enable_tboard_dataset = iterator.make_initializer(tensorboard_datasets)
 
         # Build the model
         self.build_network(next_batch['mri'], next_batch['seg'])
@@ -246,9 +256,9 @@ class SegAN():
                 sess.run(tf.global_variables_initializer())
             self.visualizer = SeganViewer(self, sess, self.params['visualize_folder'])
 
-            global_step=self.layers['train']['global_step']
-            while global_step <= self.params['max_iterations']:
-                # Initialize the dataset iterator and set the training flag to True
+
+            while self.layers['train']['global_step'] <= self.params['max_iterations']:
+                # Initialize the dataset iterators and set the training flag to True
                 sess.run([enable_train_dataset, self.layers['ops']['enable_training']])
                 print("Training...")
                 while True:
@@ -258,15 +268,21 @@ class SegAN():
                         _ = sess.run(self.layers['train']['step_C'])
                         _ = sess.run(self.layers['train']['step_S'])
                         # Visualizing losses
-                        self.visualizer.log(sess, show='train_loss', global_step=global_step, last_time=epoch_start_time)
-                        global_step += 1
+                        self.visualizer.log(sess, show='train_loss', global_step=self.layers['train']['global_step'], last_time=epoch_start_time)
+                        self.layers['train']['global_step'] += 1
                     except tf.errors.OutOfRangeError:
                         print("Epoch Ended")
                         break
 
                 # Show a prediction made with training set:
-                sess.run([enable_train_dataset, self.layers['ops']['disable_training']])
-                self.visualizer.log(sess, show='train', global_step=global_step)
+                # TODO: Add also the test set
+                # Use the BatchNorm current weights (from current batch) by not disabling training [train debug]
+                sess.run(enable_tboard_dataset)
+                self.visualizer.log(sess, show='train', global_step=self.layers['train']['global_step'])
+                # Use the BatchNorm learned weights by disabling training
+                # sess.run([/enable_tboard_dataset/, self.layers['ops']['disable_training']])
+                # self.visualizer.log(sess, show='test', global_step=self.layers['train']['global_step'])
+
                 print("Checkpoint...")
                 self.save(sess)
 
