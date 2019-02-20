@@ -61,14 +61,16 @@ class SegAN():
         # Defining the saver. Every tensor defined afterwards is not included in the model checkpoint
         self.saver = tf.train.Saver(keep_checkpoint_every_n_hours=1, max_to_keep=100)
 
-    def _conv2d(self, input, kern_size, filters, strides, padding='SAME', name=None, clip=False):
+    def _conv2d(self, input, kern_size, filters, strides, padding='SAME', name=None, clip=False, reuse=False):
         def get_filters(shape, clip):
             # This initialization is taken from SegAN code
             initializer = tf.random_normal(shape, mean=0.0, stddev=math.sqrt(2./(shape[0]*shape[1]*shape[2])), dtype=self.params['dtype'])
-            return tf.Variable(initializer, constraint=self.params['clip']['constraint'] if clip else None, name="W", dtype=self.params['dtype'])
+            return tf.get_variable(name="W", initializer=initializer, constraint=self.params['clip']['constraint'] if clip else None, dtype=self.params['dtype'], trainable=True)
         filter_shape = (kern_size, kern_size, input.shape[-1].value, filters)
-        # No need for bias as the batchnorm already account for that
-        return tf.nn.conv2d(input, filter=get_filters(filter_shape, clip), strides=[1,strides, strides,1], padding=padding, name=name)
+        with tf.variable_scope(name_or_scope=name, default_name="conv2d", reuse=reuse):
+            # No need for bias as the batchnorm already account for that
+            return tf.nn.conv2d(input, filter=get_filters(filter_shape, clip), strides=[1,strides, strides,1], padding=padding, name=name)
+
 
     def _batchnorm(self, x):
         return tf.layers.batch_normalization(x, epsilon=1e-5, momentum = 0.1, training=self.layers['in']['training'])
@@ -77,7 +79,7 @@ class SegAN():
         new_shape = [int(self.params['mri_shape'][1]*factor_wrt_input), int(self.params['mri_shape'][1]*factor_wrt_input)]
         return tf.cast(tf.image.resize_bilinear(input, size=new_shape), self.params['dtype'])
 
-    def build_segmentor(self, scope='S', reuse=None):
+    def build_segmentor(self, scope='S', reuse=False):
         '''
         SegAN Segmentor is made of
             Input = 160x160x3
@@ -96,14 +98,14 @@ class SegAN():
         :return: None. Created layers are saved in self.layers
         '''
         with tf.variable_scope(scope, reuse=reuse):
-            self.layers['S']['enc_1'] = tf.nn.leaky_relu(self._conv2d(self.layers['in']['mri'], kern_size=4, filters=64, strides=2))
-            self.layers['S']['enc_2'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_1'], kern_size=4, filters=128, strides=2, clip=self.params['clip']['S'])))
-            self.layers['S']['enc_3'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_2'], kern_size=4, filters=256, strides=2, clip=self.params['clip']['S'])))
-            self.layers['S']['enc_4'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_3'], kern_size=4, filters=512, strides=2, clip=self.params['clip']['S'])))
-            self.layers['S']['dec_3'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(self.layers['S']['enc_4'], factor_wrt_input=1/8), kern_size=3, filters=256, strides=1, clip=self.params['clip']['S'])))
-            self.layers['S']['dec_2'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(tf.add(self.layers['S']['dec_3'], self.layers['S']['enc_3']), factor_wrt_input=1/4), kern_size=3, filters=128, strides=1, clip=self.params['clip']['S'])))
-            self.layers['S']['dec_1'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(tf.add(self.layers['S']['dec_2'], self.layers['S']['enc_2']), factor_wrt_input=1/2), kern_size=3, filters=64, strides=1, clip=self.params['clip']['S'])))
-            self.layers['S']['out'] = tf.sigmoid(self._conv2d(self._resize(tf.add(self.layers['S']['dec_1'], self.layers['S']['enc_1']), factor_wrt_input=1.0), kern_size=3, filters=self.params['seg_shape'][-1], strides=1, clip=self.params['clip']['S'], name='out_unbound'), name='out')
+            self.layers['S']['enc_1'] = tf.nn.leaky_relu(self._conv2d(self.layers['in']['mri'], kern_size=4, filters=64, strides=2, reuse=reuse, name='enc_1'))
+            self.layers['S']['enc_2'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_1'], kern_size=4, filters=128, strides=2, clip=self.params['clip']['S'], reuse=reuse, name='enc_2')))
+            self.layers['S']['enc_3'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_2'], kern_size=4, filters=256, strides=2, clip=self.params['clip']['S'], reuse=reuse, name='enc_3')))
+            self.layers['S']['enc_4'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers['S']['enc_3'], kern_size=4, filters=512, strides=2, clip=self.params['clip']['S'], reuse=reuse, name='enc_4')))
+            self.layers['S']['dec_3'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(self.layers['S']['enc_4'], factor_wrt_input=1/8), kern_size=3, filters=256, strides=1, clip=self.params['clip']['S'], reuse=reuse, name='dec_3')))
+            self.layers['S']['dec_2'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(tf.add(self.layers['S']['dec_3'], self.layers['S']['enc_3']), factor_wrt_input=1/4), kern_size=3, filters=128, strides=1, clip=self.params['clip']['S'], reuse=reuse, name='dec_2')))
+            self.layers['S']['dec_1'] = tf.nn.relu(self._batchnorm(self._conv2d(self._resize(tf.add(self.layers['S']['dec_2'], self.layers['S']['enc_2']), factor_wrt_input=1/2), kern_size=3, filters=64, strides=1, clip=self.params['clip']['S'], reuse=reuse, name='dec_1')))
+            self.layers['S']['out'] = tf.sigmoid(self._conv2d(self._resize(tf.add(self.layers['S']['dec_1'], self.layers['S']['enc_1']), factor_wrt_input=1.0), kern_size=3, filters=self.params['seg_shape'][-1], strides=1, clip=self.params['clip']['S'], name='out_unbound', reuse=reuse), name='out')
         return self.layers['S']['out']
 
     def build_critic(self, input_seg, scope='C', layer_idx='C_gt', reuse=None):
@@ -118,9 +120,9 @@ class SegAN():
         C = layer_idx
         with tf.variable_scope(scope, reuse=reuse):
             self.layers[C]['mri_masked'] = tf.multiply(self.layers['in']['mri'], input_seg, name='mri_masked')
-            self.layers[C]['enc_1'] = tf.nn.leaky_relu(self._conv2d(self.layers[C]['mri_masked'], kern_size=4, filters=64, strides=2, clip=self.params['clip']['C']))
-            self.layers[C]['enc_2'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers[C]['enc_1'], kern_size=4, filters=128, strides=2, clip=self.params['clip']['C'])))
-            self.layers[C]['enc_3'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers[C]['enc_2'], kern_size=4, filters=256, strides=2, clip=self.params['clip']['C'])))
+            self.layers[C]['enc_1'] = tf.nn.leaky_relu(self._conv2d(self.layers[C]['mri_masked'], kern_size=4, filters=64, strides=2, clip=self.params['clip']['C'], reuse=reuse, name='enc_1'))
+            self.layers[C]['enc_2'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers[C]['enc_1'], kern_size=4, filters=128, strides=2, clip=self.params['clip']['C'], reuse=reuse, name='enc_2')))
+            self.layers[C]['enc_3'] = tf.nn.leaky_relu(self._batchnorm(self._conv2d(self.layers[C]['enc_2'], kern_size=4, filters=256, strides=2, clip=self.params['clip']['C'], reuse=reuse, name='enc_3')))
 
             # Flattening each 4D activation volume in a 2D
             enc_1_flattened = tf.reshape(self.layers[C]['enc_1'], shape=[self.params['batch_size'], -1]) # Shape: (batchsize, 409600)
@@ -208,7 +210,7 @@ class SegAN():
         except:
             print("Failed to load last globalstep. Initializing a new run...")
             self.layers['train']['global_step'] = 0
-        self.layers['train']['global_step_tensor'] = tf.Variable(self.layers['train']['global_step'], name='global_step')
+        self.layers['train']['global_step_tensor'] = tf.get_variable(name='global_step', initializer=self.layers['train']['global_step'])
 
     def save(self, sess):
         os.makedirs(self.params['checkpoint_folder'], exist_ok=True)
@@ -220,7 +222,7 @@ class SegAN():
         self.saver.save(sess, self.params['checkpoint_folder']+'model.ckpt', global_step=self.layers['train']['global_step_tensor'])
 
 
-    def train(self):
+    def train(self, seed=None):
 
         # Load the training dataset and feed the input to the network.
         # NOTICE: Dataset has to be interleaved with as many samples as we intend to call sess.run() with the same data,
@@ -228,12 +230,14 @@ class SegAN():
         # The expected behaviour is to call .run for: train_S, train_C, loss_calculation.
         train_dataset = dh.load_dataset('brats2015-Train-all',
                                         batch_size=self.params['batch_size'],
+                                        buffer_size=650,
                                         mri_type="MR_T1",
                                         interleave=3,
                                         cast_to=self.params['dtype'],
                                         clip_labels_to=1.0)
         tensorboard_datasets =  dh.load_dataset('brats2015-Train-all',
                                         batch_size=self.params['batch_size'],
+                                        buffer_size=32,
                                         mri_type="MR_T1",
                                         cast_to=self.params['dtype'],
                                         clip_labels_to=1.0,
@@ -251,6 +255,10 @@ class SegAN():
         self.build_network(next_batch['mri'], next_batch['seg'])
 
         with tf.Session(config=self.params['session_config']) as sess:
+            # Setting the Graph-level seed
+            if seed is not None:
+                tf.set_random_seed(seed)
+
             loaded = self.load(sess)
             if not loaded:
                 sess.run(tf.global_variables_initializer())
@@ -290,11 +298,10 @@ class SegAN():
 
 if __name__ == '__main__':
     batchsize = 32
-
     mri_shape = [batchsize, 240, 240, 1]
     seg_shape = [batchsize, 240, 240, 1]
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
     segan = SegAN(mri_shape, seg_shape, config=config)
-    segan.train()
+    segan.train(seed=1234567890)
     print("Done")
