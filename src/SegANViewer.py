@@ -10,19 +10,50 @@ class SeganViewer():
         '''
         self.output_folder = output_folder
         self.segan = segan
-        self.summaries = {'train_loss':[],  # Only logs the training loss and metrics (faster)
-                          'train':[], # Shows the images during training (slower)
-                          'test_loss':[], # Only logs the test loss and metrics (faster)
-                          'test':[], # Shows the images during testing (slower)
-                          'predict':[], # Shows the images during prediction. Only requires an input MRI
+        self.summaries = {'train_metrics':[],  # Only logs the training loss and metrics (faster)
+                          'train_img':[], # Shows the images during training (slower)
+                          'test_metrics':[], # Only logs the test loss and metrics (faster)
+                          'test_img':[], # Shows the images during testing (slower)
                           }
 
-        # Creating summaries to show
-        loss_c = tf.summary.scalar('loss_c', self.segan.layers['train']['loss_c'])
-        loss_s = tf.summary.scalar('loss_s', self.segan.layers['train']['loss_s'])
-        dice_score = tf.summary.scalar('dice_score', self.segan.layers['eval']['dice_score'])
-        sensitivity = tf.summary.scalar('sensitivity', self.segan.layers['eval']['sensitivity'])
-        specificity = tf.summary.scalar('specificity', self.segan.layers['eval']['specificity'])
+        # Creating accumulators for displaying the average loss
+        self.current_batch_stats = {run:{
+                                    'loss_c': list(),
+                                    'loss_s': list(),
+                                    'sensitivity': list(),
+                                    'specificity': list(),
+                                    'false_positive_rate': list(),
+                                    'precision': list(),
+                                    'dice_score': list(),
+                                    'balanced_accuracy':list()
+                                    } for run in ['train_metrics', 'test_metrics']}
+
+        # These are the tensors that gets evaluated for each batch
+        self.scalar_metrics = {
+                                    'loss_c': self.segan.layers['train']['loss_c'],
+                                    'loss_s': self.segan.layers['train']['loss_s'],
+                                    'sensitivity': self.segan.layers['eval']['sensitivity'],
+                                    'specificity': self.segan.layers['eval']['specificity'],
+                                    'false_positive_rate': self.segan.layers['eval']['false_positive_rate'],
+                                    'precision': self.segan.layers['eval']['precision'],
+                                    'dice_score': self.segan.layers['eval']['dice_score'],
+                                    'balanced_accuracy':self.segan.layers['eval']['balanced_accuracy']
+        }
+        
+        # We build some placeholders that will be evaulated after each epoch to display the averages in TB
+        self.average_tensors = {'avg_loss_c': tf.placeholder(tf.float32),
+                                'avg_loss_s': tf.placeholder(tf.float32),
+                                'avg_sensitivity': tf.placeholder(tf.float32),
+                                'avg_specificity': tf.placeholder(tf.float32),
+                                'avg_false_positive_rate': tf.placeholder(tf.float32),
+                                'avg_precision': tf.placeholder(tf.float32),
+                                'avg_dice_score': tf.placeholder(tf.float32),
+                                'avg_balanced_accuracy': tf.placeholder(tf.float32)
+                               }
+        
+        # Creating scalar summaries for each metric (and calculating the mean)
+        self.avg_summaries = [tf.summary.scalar(k, tf.reduce_mean(self.average_tensors[k])) for k in self.average_tensors.keys()]
+        
 
         mri_input = tf.summary.image('mri_input', self.segan.layers['in']['mri'], max_outputs=max_img_outputs)
         seg_input = tf.summary.image('seg_input', self.segan.layers['in']['seg'], max_outputs=max_img_outputs)
@@ -37,42 +68,30 @@ class SeganViewer():
 
 
 
-        # Defining which summaries to calculate for each case
-        self.summaries['train_loss'].append(loss_c)
-        self.summaries['train_loss'].append(loss_s)
-        self.summaries['train_loss'].append(dice_score)
-        self.summaries['train_loss'].append(sensitivity)
-        self.summaries['train_loss'].append(specificity)
+        # Defining the merged summaries that get printed in TB
+        self.summaries['train_metrics'] = self.avg_summaries
+        self.summaries['test_metrics'] = self.avg_summaries
+        
+        self.summaries['train_img'].append(mri_input)
+        self.summaries['train_img'].append(seg_input)
+        self.summaries['train_img'].append(s_output)
+        self.summaries['train_img'].append(d_input)
+        self.summaries['train_img'].append(w_as_img_s)
+        self.summaries['train_img'].append(w_as_img_c)
 
-        self.summaries['train'].append(mri_input)
-        self.summaries['train'].append(seg_input)
-        self.summaries['train'].append(s_output)
-        self.summaries['train'].append(d_input)
-        self.summaries['train'].append(w_as_img_s)
-        self.summaries['train'].append(w_as_img_c)
+        self.summaries['test_img'].append(mri_input)
+        self.summaries['test_img'].append(seg_input)
+        self.summaries['test_img'].append(s_output)
+        self.summaries['test_img'].append(d_input)
 
-        self.summaries['test_loss'].append(loss_c)
-        self.summaries['test_loss'].append(loss_s)
-        self.summaries['test_loss'].append(dice_score)
-        self.summaries['test_loss'].append(sensitivity)
-        self.summaries['test_loss'].append(specificity)
-
-        self.summaries['test'].append(mri_input)
-        self.summaries['test'].append(seg_input)
-        self.summaries['test'].append(s_output)
-        self.summaries['test'].append(d_input)
-
-        self.summaries['predict'].append(mri_input)
-        self.summaries['predict'].append(s_output)
-        self.summaries['predict'].append(d_input)
-        # TODO: Add D output
-
-        # Merge the summaries
+        # Merge the summaries into writers
         self.merged = {run: tf.summary.merge(self.summaries[run]) for run in self.summaries.keys()}
         self.train_writer = tf.summary.FileWriter(output_folder+'train/', sess.graph)
         self.test_writer = tf.summary.FileWriter(output_folder+'test/', sess.graph)
-        self.predict_writer = tf.summary.FileWriter(output_folder+'prediction/', sess.graph)
+        #self.predict_writer = tf.summary.FileWriter(output_folder+'prediction/', sess.graph)
 
+        
+        
     def _rearrange_filters(self, input):
         '''
         Given a tensor of weights of shape (K, K, C, N)
@@ -82,47 +101,58 @@ class SeganViewer():
         '''
 
         W, H, C, R = input.shape
-        return tf.transpose(tf.reshape(tf.transpose(input, perm=[3, 1, 2, 0]), (W * C, H * R)))
+        return tf.reshape(tf.transpose(input, perm=[3, 1, 2, 0]), (1, W * C, H * R, 1))
 
 
-
-    def get_ops(self, show):
-        '''
-        Returns the tensors that have to be run to compute and visualize the training loss. These loss have to be passed to the log function after evaluation
-        :param show: What type of run has to be logged. Can be one of train_loss, train, test_loss, test, predict.
-        :return:
-        '''
-        if show in ['train_loss', 'test_loss']:
-            return [self.merged[show], self.segan.layers['train']['loss_c'], self.segan.layers['train']['loss_s']]
-        else:
-            return self.merged[show]
-
-    def log(self, session, show, global_step, last_time=None):
+    def log(self, session, show, feed_dict, last_time=None):
         '''
         Logs network loss or ouputs, depending on the chosen run and values fed.
         :param session: the current tensorflow session
-        :param show: What type of run has to be logged. Can be one of train_loss, train, test_loss, test, predict.
-        :param global_step: (Number) current iteration index of the network.
+        :param show: What type of run has to be logged. 
+        Can be one of:
+        - train_metrics: Evaulate and keep the train metrics for the current batch
+        - test_metrics: Evaulate and keep the test metrics for the current batch
+        - train: writes the result to tensorboard. Also displays image data
+        - test: writes the result to tensorboard. Also displays image data
+        :param feed_dict: feed dictionary to use when evaluating the models, if any
         :return: None
         '''
-        assert show in self.summaries.keys(), "Run type not found. Please select one from {}".format(self.summaries.keys())
-        if show in ['train_loss', 'test_loss']:
-            summary, loss_c, loss_s = session.run([self.merged[show], self.segan.layers['train']['loss_c'], self.segan.layers['train']['loss_s']])
-            writer = self.train_writer if show=='train_loss' else self.test_writer
-            writer.add_summary(summary, global_step)
+
+        assert show in ['train_metrics', 'test_metrics', 'test', 'train'], "Run type not found. Please select one from {}".format(self.summaries.keys())
+        if show in ['train_metrics', 'test_metrics']:
+            # This get called after each batch
+            
+            last_values = session.run(self.scalar_metrics, feed_dict=feed_dict)
+            # Adding last values to the list
+            for k in last_values.keys():
+                self.current_batch_stats[show][k].append(last_values[k])
 
             time_log = "| time={}".format(time.time() - last_time) if last_time is not None else ""
-            print("{}: {} | c={} | s={} {}".format(global_step, show, loss_c, loss_s, time_log))
+            text=" | ".join(["{}={}".format(k, last_values[k]) for k in last_values.keys()])
+            print("{} {} time:{}: {} - ".format(self.segan.layers['train']['global_step'], show, time_log, text))
             return
         if show is 'train':
             writer = self.train_writer
         if show is 'test':
             writer = self.test_writer
-        if show is 'predict':
-            writer = self.predict_writer
-        summary = session.run(self.merged[show])
-        writer.add_summary(summary, global_step=global_step)
+        
+        # Write the summary
+        # Show the images
+        img_summary = session.run(self.merged[show+'_img'], feed_dict=feed_dict)
+        writer.add_summary(img_summary, global_step=self.segan.layers['train']['global_step'])
 
+        # Feed the average of batches epochs into tensorflow
+        metric_log = self.current_batch_stats[show+'_metrics']
+        print(list(metric_log.keys()))
+        feed_dict.update({self.average_tensors['avg_{}'.format(metric)]: metric_log[metric] for metric in metric_log.keys()})
+        
+        avg_summary = session.run(self.merged[show+'_metrics'], feed_dict=feed_dict)
+        writer.add_summary(avg_summary, global_step=self.segan.layers['train']['global_step'])
+
+        # Reset the accumulators
+        for k in self.current_batch_stats[show+'_metrics']:
+            self.current_batch_stats[show+'_metrics'][k] = list()
+        
 
 
 

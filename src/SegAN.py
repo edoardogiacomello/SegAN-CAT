@@ -14,11 +14,12 @@ class SegAN():
                         'clip': {'C': True, 'S': False, 'constraint':lambda x: tf.clip_by_value(x, clip_value_min=-0.05, clip_value_max=0.05)},
                         'dtype': tf.float32,
                         'learning_rate': 0.00002,
-                        'max_iterations': 500000,
-                        'visualize_every_itn': 1000,
+                        'max_iterations': 2000000,
+                        'save_every_itn': 500,
                         'batch_size': mri_shape[0],
                         'checkpoint_folder': '../models/SegAN/{}_model/'.format(run_name),
                         'visualize_folder': '../models/SegAN/{}_visualize/'.format(run_name),
+                        'profiler_folder': '../models/SegAN/{}_profiler/'.format(run_name),
                         'threshold': 0.5, # Treshold for a segmentation to be considered as 1 or 0
                        }
         # Define a dictionary that will contain the layers for faster access
@@ -29,12 +30,13 @@ class SegAN():
                        'train':{}, # Operations for training
                        'view':{}, # Operations for tensorboard visualization
                        'eval':{}, # Tensors containing evaluation metrics
-                       'ops': {}, # operators on variables to influence the training phase
                        }
 
-    def build_network(self, input_mri, true_seg):
+    def build_network(self, input_mri, true_seg, session, load_checkpoint=None):
         '''
         Build a network using as input the tensors specified as parameters.
+        If load_checkpoint is None, the last available is loaded. If no models are available, a new network is initialized
+
         The value of "training" must be fed as a feed_dict in order to enable/disable batch normalization learning
         :param input_mri: Tensor for the MRI to use as S and C input
         :param true_seg: Tensor for the ground truth segmentation in input to C
@@ -43,8 +45,6 @@ class SegAN():
         # This flag is used for enabling/disabling the training mode for batch normalization.
         # When true, BN layers use mean/var for the current batch, otherwise they use the learned ones.
         self.layers['in']['training'] = tf.get_variable("training", dtype=tf.bool, trainable=False, initializer=False)
-        self.layers['ops']['enable_training'] = tf.assign(self.layers['in']['training'], True, validate_shape=False)
-        self.layers['ops']['disable_training'] = tf.assign(self.layers['in']['training'], False, validate_shape=False)
 
         # Setting the inputs
         self.layers['in']['mri'] = input_mri
@@ -56,10 +56,17 @@ class SegAN():
         self.layers['C_s']['out'] = self.build_critic(self.layers['S']['out'], layer_idx='C_s', reuse=True)
         self.define_loss()
         self.define_evaluation_metrics()
-        # Defining optimizer
+        # Loading the global step from checkpoint filename, otherwise the last available.
+        self._load_last_global_step(override_with_checkpoint_gs=load_checkpoint)
+        # Defining optimizer (need the global_step_tensor to be defined)
         self.define_optimizer()
+
         # Defining the saver. Every tensor defined afterwards is not included in the model checkpoint
         self.saver = tf.train.Saver(keep_checkpoint_every_n_hours=1, max_to_keep=100)
+
+        # Load the model variables or initialize a new network
+        if not self.load(session, checkpoint=load_checkpoint):
+            session.run(tf.global_variables_initializer())
 
     def _conv2d(self, input, kern_size, filters, strides, padding='SAME', name=None, clip=False, reuse=False):
         def get_filters(shape, clip):
@@ -75,7 +82,7 @@ class SegAN():
     def _batchnorm(self, x):
         return tf.layers.batch_normalization(x, epsilon=1e-5, momentum = 0.1, training=self.layers['in']['training'])
 
-    def _resize(self, input, factor_wrt_input=2):
+    def _resize(self, input, factor_wrt_input=2.0):
         new_shape = [int(self.params['mri_shape'][1]*factor_wrt_input), int(self.params['mri_shape'][1]*factor_wrt_input)]
         return tf.cast(tf.image.resize_bilinear(input, size=new_shape), self.params['dtype'])
 
@@ -148,21 +155,39 @@ class SegAN():
             dice = tf.divide(2. * intersection + epsilon, tf.reduce_sum(x) + tf.reduce_sum(y) + epsilon, name="dice_score")
             return 1 - dice/self.params['batch_size']  # from  github.com/YuanXue1993/SegAN/blob/master/train.py
 
-        self.layers['train']['loss_c'] =  tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out'])) + smooth_dice_loss(self.layers['in']['seg'], self.layers['S']['out'])
-        self.layers['train']['loss_s'] = -tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out']))
+        self.layers['train']['loss_c'] =  -tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out']))
+        self.layers['train']['loss_s'] =   tf.reduce_mean(tf.abs(self.layers['C_gt']['out']-self.layers['C_s']['out'])) + smooth_dice_loss(self.layers['in']['seg'], self.layers['S']['out'])
 
     def define_evaluation_metrics(self):
+
+
         # Boolean segmentation outputs
-        T = tf.greater(self.layers['in']['seg'], self.params['threshold'])  # Ground truth
-        P = tf.greater(self.layers['S']['out'], self.params['threshold'])   # Segmentation from S (prediction)
+        # Condition Positive - real positive cases
+        CP = tf.greater(self.layers['in']['seg'], self.params['threshold'])  # Ground truth
+        # Predicted Condition Positive - predicted positive cases
+        PCP = tf.greater(self.layers['S']['out'], self.params['threshold'])   # Segmentation from S (prediction)
+        # Codition Negative
+        CN = tf.logical_not(CP)
+        # Predicted Condition Negative
+        PCN = tf.logical_not(PCP)
 
-        nT = tf.logical_not(T)
-        nP = tf.logical_not(P)
+        TP = tf.count_nonzero(tf.logical_and(CP, PCP))
+        FP = tf.count_nonzero(tf.logical_and(CN, PCP))
+        FN = tf.count_nonzero(tf.logical_and(CP, PCN))
+        TN = tf.count_nonzero(tf.logical_and(CN, PCN))
 
-        self.layers['eval']['dice_score'] = 2*(tf.count_nonzero(tf.logical_and(T,P))/(tf.count_nonzero(T)+tf.count_nonzero(P)))
-        # True Positive Rate
-        self.layers['eval']['sensitivity'] = (tf.count_nonzero(tf.logical_and(T,P))/(tf.count_nonzero(T)))
-        self.layers['eval']['specificity'] = (tf.count_nonzero(tf.logical_and(nT,nP))/(tf.count_nonzero(nT)))
+        # TPR/Recall/Sensitivity/HitRate, Probability of detection
+        self.layers['eval']['sensitivity'] = TP/(TP+FN)
+        # TNR/Specificity/Selectivity, Probability of false alarm
+        self.layers['eval']['specificity'] = TN/(TN+FP)
+        # False Positive Rate / fall-out
+        self.layers['eval']['false_positive_rate'] = 1 - self.layers['eval']['specificity']
+        # Precision/ Positive predictive value
+        self.layers['eval']['precision'] = TP/(TP+FP)
+        # Dice score (Equivalent to F1-Score)
+        self.layers['eval']['dice_score'] = 2*(tf.count_nonzero(tf.logical_and(CP,PCP))/(tf.count_nonzero(CP)+tf.count_nonzero(PCP)))
+        # (Balanced) Accuracy - Works with imbalanced datasets
+        self.layers['eval']['balanced_accuracy'] = (self.layers['eval']['sensitivity'] + self.layers['eval']['specificity'])/2
 
 
     def define_optimizer(self):
@@ -174,9 +199,6 @@ class SegAN():
         self.layers['train']['optimizer_S'] = tf.train.RMSPropOptimizer(learning_rate=self.params['learning_rate'])
         self.layers['train']['optimizer_C'] = tf.train.RMSPropOptimizer(learning_rate=self.params['learning_rate'])
 
-        # Loading the last global step (if any).
-        # Optimizer needs the corresponding tensor but has to be called after the load() in order to resume its variables
-        self._load_last_global_step()
         # We are asking to recalculate moving avg/var of S before each training step
         with tf.control_dependencies(batchnorm_S):
             self.layers['train']['step_S'] = self.layers['train']['optimizer_S'].minimize(self.layers['train']['loss_s'],
@@ -185,31 +207,41 @@ class SegAN():
         with tf.control_dependencies(batchnorm_C):
             self.layers['train']['step_C'] = self.layers['train']['optimizer_C'].minimize(self.layers['train']['loss_c'],
                                                                                     var_list=variables_C)
-    def load(self, sess):
+    def load(self, sess, checkpoint=None):
         '''
-        Loads a network from the 'checkpoint_folder' path. Also loads the current global_step
+        Loads a network from the 'checkpoint_folder' path (if any).
+        This function expect the the current self.layers['train']['global_step'] has been already set by _load_global_step()
         :param sess:
-        :return:
+        :param checkpoint: Try to load the corresponding checkpoint. If None, load the latest in the folder.
+        :return: True if the network has been loaded successfully. False if no checkpoint has been found and a new network has been created
         '''
         network_loaded = False
-        latest_checkpoint = tf.train.latest_checkpoint(self.params['checkpoint_folder'])
+        latest_checkpoint = checkpoint if checkpoint is not None else tf.train.latest_checkpoint(self.params['checkpoint_folder'])
         if latest_checkpoint is None:
             # No networks have been saved before
             print("No model found, creating a new one...")
-            self.layers['train']['global_step'] = 0
         else:
             self.saver.restore(sess, latest_checkpoint)
             network_loaded=True
             print("Loaded model from {} at global step {}".format(self.params['checkpoint_folder'], self.layers['train']['global_step']))
         return network_loaded
 
-    def _load_last_global_step(self):
-        try:
-            with open(self.params['checkpoint_folder'] + 'global_step', 'r') as gsin:
-                self.layers['train']['global_step'] = int(gsin.read())
-        except:
-            print("Failed to load last globalstep. Initializing a new run...")
-            self.layers['train']['global_step'] = 0
+    def _load_last_global_step(self, override_with_checkpoint_gs=None):
+        '''
+        Loads the last global step from the global_step file (if any) and creates the corresponding tensor.
+        If override_with_checkpoint_gs is not None, then the global step provided by the checkpoint name is used as global step.
+        This is useful if you are loading a network from a previous state that is not the last one.
+        :return: None. Has side effects.
+        '''
+        if override_with_checkpoint_gs is not None:
+            self.layers['train']['global_step'] = int(os.path.basename(override_with_checkpoint_gs).split('-')[-1])
+        else:
+            try:
+                with open(self.params['checkpoint_folder'] + 'global_step', 'r') as gsin:
+                    self.layers['train']['global_step'] = int(gsin.read())
+            except:
+                print("Failed to load last globalstep. Initializing a new run...")
+                self.layers['train']['global_step'] = 0
         self.layers['train']['global_step_tensor'] = tf.get_variable(name='global_step', initializer=self.layers['train']['global_step'])
 
     def save(self, sess):
@@ -228,80 +260,110 @@ class SegAN():
         # NOTICE: Dataset has to be interleaved with as many samples as we intend to call sess.run() with the same data,
         # because every time we call .run the iterator gets incremented
         # The expected behaviour is to call .run for: train_S, train_C, loss_calculation.
-        train_dataset = dh.load_dataset('brats2015-Train-all',
+
+        # Since BRATS does contain GT for testing, we train on "tcia" data and test on 2013
+        
+        train_dataset = dh.load_dataset('../datasets/brats2015-Train-all_training_crop_mri',
+                                        mri_type=['MR_T1c', 'MR_T2', 'MR_Flair'],
+                                        random_crop=[160,160,3],
                                         batch_size=self.params['batch_size'],
-                                        buffer_size=650,
-                                        mri_type="MR_T1",
-                                        interleave=3,
-                                        cast_to=self.params['dtype'],
-                                        clip_labels_to=1.0)
-        tensorboard_datasets =  dh.load_dataset('brats2015-Train-all',
-                                        batch_size=self.params['batch_size'],
-                                        buffer_size=32,
-                                        mri_type="MR_T1",
+                                        prefetch_buffer=3,
                                         cast_to=self.params['dtype'],
                                         clip_labels_to=1.0,
-                                        take_only=self.params['batch_size'],
-                                        shuffle=False)
-        # Define an iterator what works for both training and test datasets
-        iterator = tf.data.Iterator.from_structure(train_dataset.output_types, train_dataset.output_shapes)
+                                        infinite=True,
+                                        interleave=3
+                                        )
+
+        validation_dataset = dh.load_dataset('../datasets/brats2015-Train-all_validation_crop_mri',
+                                             mri_type=['MR_T1c', 'MR_T2', 'MR_Flair'],
+                                             center_crop=[160,160,3],
+                                             batch_size=self.params['batch_size'],
+                                             prefetch_buffer=1,
+                                             cast_to=self.params['dtype'],
+                                             clip_labels_to=1.0,
+                                             infinite = True,
+                                             interleave=1
+                                        )
+        
+        tensorboard_datasets = dh.load_dataset('../datasets/brats2015-Train-all_validation_crop_mri',
+                                             mri_type=['MR_T1c', 'MR_T2', 'MR_Flair'],
+                                             center_crop=[160,160,3],
+                                             batch_size=self.params['batch_size'],
+                                             prefetch_buffer=1,
+                                             cast_to=self.params['dtype'],
+                                             clip_labels_to=1.0,
+                                             interleave=1,
+                                             take_only=self.params['batch_size'],
+                                             shuffle=False,
+                                             infinite=True
+                                        )
+
+        # Define a "feedable" iterator of a string handle that selects which dataset to use
+        use_dataset=tf.placeholder(tf.string, shape=[])
+        iterator = tf.data.Iterator.from_string_handle(use_dataset, train_dataset.output_types, train_dataset.output_shapes)
         next_batch = iterator.get_next()
 
-        # Initializers for the iterators
-        enable_train_dataset = iterator.make_initializer(train_dataset)
-        enable_tboard_dataset = iterator.make_initializer(tensorboard_datasets)
+        train_iterator = train_dataset.make_initializable_iterator()
+        valid_iterator = validation_dataset.make_initializable_iterator()
+        tboard_iterator = tensorboard_datasets.make_initializable_iterator()
 
-        # Build the model
-        self.build_network(next_batch['mri'], next_batch['seg'])
+        # Initializers for the datasets
+        reset_train_iter = train_iterator.initializer
+        reset_validation_iter = valid_iterator.initializer
+        reset_tboard_iter = tboard_iterator.initializer
+
 
         with tf.Session(config=self.params['session_config']) as sess:
             # Setting the Graph-level seed
             if seed is not None:
                 tf.set_random_seed(seed)
 
-            loaded = self.load(sess)
-            if not loaded:
-                sess.run(tf.global_variables_initializer())
+            # Build the model
+            self.build_network(next_batch['mri'], next_batch['seg'], session=sess)
+
             self.visualizer = SeganViewer(self, sess, self.params['visualize_folder'])
 
+            # Handles to switch between datasets
+            use_train_dataset = sess.run(train_iterator.string_handle())
+            use_valid_dataset = sess.run(valid_iterator.string_handle())
+            use_tboard_dataset = sess.run(tboard_iterator.string_handle())
+            # Handle to switch training mode for BatchNorm
+            is_training = self.layers['in']['training']
 
             while self.layers['train']['global_step'] <= self.params['max_iterations']:
-                # Initialize the dataset iterators and set the training flag to True
-                sess.run([enable_train_dataset, self.layers['ops']['enable_training']])
+                # Initialize the dataset iterators and set the training flag to True (for BatchNorm)
+                sess.run([reset_train_iter, reset_validation_iter, reset_tboard_iter])
                 print("Training...")
-                while True:
-                    epoch_start_time = time.time()
-                    try:
-                        # Training of C and S
-                        _ = sess.run(self.layers['train']['step_C'])
-                        _ = sess.run(self.layers['train']['step_S'])
-                        # Visualizing losses
-                        self.visualizer.log(sess, show='train_loss', global_step=self.layers['train']['global_step'], last_time=epoch_start_time)
-                        self.layers['train']['global_step'] += 1
-                    except tf.errors.OutOfRangeError:
-                        print("Epoch Ended")
-                        break
 
-                # Show a prediction made with training set:
-                # TODO: Add also the test set
-                # Use the BatchNorm current weights (from current batch) by not disabling training [train debug]
-                sess.run(enable_tboard_dataset)
-                self.visualizer.log(sess, show='train', global_step=self.layers['train']['global_step'])
-                # Use the BatchNorm learned weights by disabling training
-                # sess.run([/enable_tboard_dataset/, self.layers['ops']['disable_training']])
-                # self.visualizer.log(sess, show='test', global_step=self.layers['train']['global_step'])
+                for i in range(self.params['save_every_itn']):
+                    epoch_start_time = time.time()
+                    # Training of C and S
+                    _ = sess.run(self.layers['train']['step_C'], feed_dict={use_dataset: use_train_dataset, is_training: True})
+                    _ = sess.run(self.layers['train']['step_S'], feed_dict={use_dataset: use_train_dataset, is_training: True})
+                    # Logging batch loss [Stored in SeganViewer]
+                    self.visualizer.log(sess, show='train_metrics', feed_dict={use_dataset: use_train_dataset, is_training: True}, last_time=epoch_start_time)
+                    self.visualizer.log(sess, show='test_metrics',  feed_dict={use_dataset: use_valid_dataset, is_training: False}, last_time=epoch_start_time)
+                    self.layers['train']['global_step'] += 1
 
                 print("Checkpoint...")
                 self.save(sess)
 
+                # Show a prediction made with a reference sample and plot the epoch metrics:
+                # Show the differences by using trained and current BatchNorm weights.
+                self.visualizer.log(sess, show='train', feed_dict={use_dataset: use_tboard_dataset, is_training: True})
+                self.visualizer.log(sess, show='test', feed_dict={use_dataset: use_tboard_dataset, is_training: False})
+
+
+
 
 
 if __name__ == '__main__':
-    batchsize = 32
-    mri_shape = [batchsize, 240, 240, 1]
-    seg_shape = [batchsize, 240, 240, 1]
+    batchsize = 64
+    # These shapes are considered after cropping
+    mri_shape = [batchsize, 160, 160, 3]
+    seg_shape = [batchsize, 160, 160, 1]
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-    segan = SegAN(mri_shape, seg_shape, config=config)
+    segan = SegAN(mri_shape, seg_shape, config=config, run_name='21_mar')
     segan.train(seed=1234567890)
     print("Done")
