@@ -1,5 +1,7 @@
 import tensorflow as tf
 import time
+import numpy as np
+
 class SeganViewer():
     def __init__(self, segan, sess, output_folder, max_img_outputs=12):
         '''
@@ -27,7 +29,20 @@ class SeganViewer():
                                     'dice_score': list(),
                                     'balanced_accuracy':list()
                                     } for run in ['train_metrics', 'test_metrics']}
-
+        
+        # Keeping track of the best epoch values
+        self.best_avg_values = {run:{
+                                    'loss_c': None,
+                                    'loss_s': None,
+                                    'sensitivity': None,
+                                    'specificity': None,
+                                    'false_positive_rate': None,
+                                    'precision': None,
+                                    'dice_score': None,
+                                    'balanced_accuracy':None
+                                    } for run in ['train_metrics', 'test_metrics']}
+        
+        
         # These are the tensors that gets evaluated for each batch
         self.scalar_metrics = {
                                     'loss_c': self.segan.layers['train']['loss_c'],
@@ -50,6 +65,7 @@ class SeganViewer():
                                 'avg_dice_score': tf.placeholder(tf.float32),
                                 'avg_balanced_accuracy': tf.placeholder(tf.float32)
                                }
+
         
         # Creating scalar summaries for each metric (and calculating the mean)
         self.avg_summaries = [tf.summary.scalar(k, tf.reduce_mean(self.average_tensors[k])) for k in self.average_tensors.keys()]
@@ -104,7 +120,7 @@ class SeganViewer():
         return tf.reshape(tf.transpose(input, perm=[3, 1, 2, 0]), (1, W * C, H * R, 1))
 
 
-    def log(self, session, show, feed_dict, last_time=None):
+    def log(self, session, show, feed_dict, last_time=None, monitor=None):
         '''
         Logs network loss or ouputs, depending on the chosen run and values fed.
         :param session: the current tensorflow session
@@ -115,7 +131,8 @@ class SeganViewer():
         - train: writes the result to tensorboard. Also displays image data
         - test: writes the result to tensorboard. Also displays image data
         :param feed_dict: feed dictionary to use when evaluating the models, if any
-        :return: None
+        :param monitor: a dict of {metric_key: threshold} of average metrics to monitor (those displayed on tensorboard - see __init__ for a list of keys). If present, the function will output a dict {avg_metric_key: bool} which tells if the current epoch has both reached the best historical value for each avg_metric_key and is above the given threshold. Only has effect with 'test' and 'train' runs.
+        :return: None or Bool
         '''
 
         assert show in ['train_metrics', 'test_metrics', 'test', 'train'], "Run type not found. Please select one from {}".format(self.summaries.keys())
@@ -129,7 +146,7 @@ class SeganViewer():
 
             time_log = "| time={}".format(time.time() - last_time) if last_time is not None else ""
             text=" | ".join(["{}={}".format(k, last_values[k]) for k in last_values.keys()])
-            print("{} {} time:{}: {} - ".format(self.segan.layers['train']['global_step'], show, time_log, text))
+            #print("{} {} time:{}: {} - ".format(self.segan.layers['train']['global_step'], show, time_log, text))
             return
         if show is 'train':
             writer = self.train_writer
@@ -143,16 +160,29 @@ class SeganViewer():
 
         # Feed the average of batches epochs into tensorflow
         metric_log = self.current_batch_stats[show+'_metrics']
-        print(list(metric_log.keys()))
         feed_dict.update({self.average_tensors['avg_{}'.format(metric)]: metric_log[metric] for metric in metric_log.keys()})
         
         avg_summary = session.run(self.merged[show+'_metrics'], feed_dict=feed_dict)
         writer.add_summary(avg_summary, global_step=self.segan.layers['train']['global_step'])
 
+        # Checking if this epoch reached some optimal value
+        
+        if monitor is not None:
+            opt_reached = {}
+            for k, thr in monitor.items():
+                best_value = self.best_avg_values[show+'_metrics'][k]
+                curr_value = np.nanmean(metric_log[k])
+                if best_value is None or curr_value > best_value:
+                    best_value = self.best_avg_values[show+'_metrics'][k] = curr_value
+                    opt_reached[k] = (curr_value >= thr)
+                    print("Reached a new best value for {}: {}. Threshold reached: {}".format(k, curr_value, opt_reached[k]))
+                else:
+                    opt_reached[k] = False
+        else:
+            opt_reached = None
+        
         # Reset the accumulators
         for k in self.current_batch_stats[show+'_metrics']:
             self.current_batch_stats[show+'_metrics'][k] = list()
         
-
-
-
+        return opt_reached
