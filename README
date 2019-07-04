@@ -1,0 +1,4 @@
+# Useful commands
+
+tensorboard --logdir=last_visualize/ --s
+amples_per_plugin images=100

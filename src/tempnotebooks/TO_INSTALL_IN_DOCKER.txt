@@ -1,7 +1,0 @@
-wget https://deb.nodesource.com/setup_11.x
-chmod +x setup_11.x
-./setup_11.x
-apt-get install nodejs
-pip install jupyterlab itkwidgets
-jupyter labextension install @jupyter-widgets/jupyterlab-manager itk-jupyter-widgets
-

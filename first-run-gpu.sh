@@ -5,6 +5,6 @@ else    CONTAINER_NAME="";
 fi
 echo "Mapping container port 8888 to host port 8889"
 DEVICE="gpu"
-nvidia-docker run -p 8889:8888 -v $PWD/../datasets/:/home/datasets/:ro -v $PWD:/home/DeepMRI $CONTAINER_NAME -it edoardogiacomello/deepmri:latest-$DEVICE
+nvidia-docker run -p 8887:8888 -v $PWD/../datasets/:/home/datasets/:ro -v $PWD:/home/DeepMRI $CONTAINER_NAME -it edoardogiacomello/deepmri:latest-$DEVICE
 
 

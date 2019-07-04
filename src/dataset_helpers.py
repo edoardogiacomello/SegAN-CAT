@@ -14,48 +14,49 @@ output_stat_path = '../datasets/meta/'
 
 use_gzip_compression = True
 
+AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 # Description on the features contained in the .tfrecord dataset
 def get_feature_description(modalities):
 
     feature_description =lambda mod : {
-                            mod+'_mri': tf.FixedLenFeature([], tf.string),
-                            mod+'_path': tf.FixedLenFeature([], tf.string),
+                            mod+'_mri': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_path': tf.io.FixedLenFeature([], tf.string),
         
-                            mod+'_mri_min': tf.FixedLenFeature([], tf.float32),
-                            mod+'_mri_min_src': tf.FixedLenFeature([], tf.float32),
-                            mod+'_mri_max': tf.FixedLenFeature([], tf.float32),
-                            mod+'_mri_max_src': tf.FixedLenFeature([], tf.float32),
+                            mod+'_mri_min': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_mri_min_src': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_mri_max': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_mri_max_src': tf.io.FixedLenFeature([], tf.float32),
 
-                            mod+'_mri_lperc': tf.FixedLenFeature([], tf.float32),
-                            mod+'_mri_hperc': tf.FixedLenFeature([], tf.float32),
-                            mod+'_mri_hperc_src': tf.FixedLenFeature([], tf.float32),   
-                            mod+'_mri_lperc_src': tf.FixedLenFeature([], tf.float32),
+                            mod+'_mri_lperc': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_mri_hperc': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_mri_hperc_src': tf.io.FixedLenFeature([], tf.float32),   
+                            mod+'_mri_lperc_src': tf.io.FixedLenFeature([], tf.float32),
         
-                            mod+'_x_dimension': tf.FixedLenFeature([], tf.int64),
-                            mod+'_y_dimension': tf.FixedLenFeature([], tf.int64),
-                            mod+'_z_dimension': tf.FixedLenFeature([], tf.int64),        
-                            mod+'_z_dimension_src': tf.FixedLenFeature([], tf.int64),
-                            mod+'_x_dimension_src': tf.FixedLenFeature([], tf.int64),
-                            mod+'_y_dimension_src': tf.FixedLenFeature([], tf.int64),
+                            mod+'_x_dimension': tf.io.FixedLenFeature([], tf.int64),
+                            mod+'_y_dimension': tf.io.FixedLenFeature([], tf.int64),
+                            mod+'_z_dimension': tf.io.FixedLenFeature([], tf.int64),        
+                            mod+'_z_dimension_src': tf.io.FixedLenFeature([], tf.int64),
+                            mod+'_x_dimension_src': tf.io.FixedLenFeature([], tf.int64),
+                            mod+'_y_dimension_src': tf.io.FixedLenFeature([], tf.int64),
         
-                            mod+'_x_origin_src': tf.FixedLenFeature([], tf.float32),
-                            mod+'_y_origin_src': tf.FixedLenFeature([], tf.float32),
-                            mod+'_z_origin_src': tf.FixedLenFeature([], tf.float32),
+                            mod+'_x_origin_src': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_y_origin_src': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_z_origin_src': tf.io.FixedLenFeature([], tf.float32),
 
-                            mod+'_z_spacing_src': tf.FixedLenFeature([], tf.float32),
-                            mod+'_x_spacing_src': tf.FixedLenFeature([], tf.float32),
-                            mod+'_y_spacing_src': tf.FixedLenFeature([], tf.float32),
+                            mod+'_z_spacing_src': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_x_spacing_src': tf.io.FixedLenFeature([], tf.float32),
+                            mod+'_y_spacing_src': tf.io.FixedLenFeature([], tf.float32),
 
-                            mod+'_patient': tf.FixedLenFeature([], tf.string),                            
-                            mod+'_sample_number': tf.FixedLenFeature([], tf.string),
-                            mod+'_patient_grade': tf.FixedLenFeature([], tf.string),
-                            mod+'_location': tf.FixedLenFeature([], tf.string),
-                            mod+'_dataset_version': tf.FixedLenFeature([], tf.string),
-                            mod+'_dataset_name': tf.FixedLenFeature([], tf.string),
-                            mod+'_mri_type': tf.FixedLenFeature([], tf.string),        
-                            mod+'_dataset_split': tf.FixedLenFeature([], tf.string),
-                            mod+'_patient_mri_seq': tf.FixedLenFeature([], tf.string),
+                            mod+'_patient': tf.io.FixedLenFeature([], tf.string),                            
+                            mod+'_sample_number': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_patient_grade': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_location': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_dataset_version': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_dataset_name': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_mri_type': tf.io.FixedLenFeature([], tf.string),        
+                            mod+'_dataset_split': tf.io.FixedLenFeature([], tf.string),
+                            mod+'_patient_mri_seq': tf.io.FixedLenFeature([], tf.string),
                           }
     features = {}
     for mod in modalities:
@@ -94,7 +95,8 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
         meta['patient_mri_seq'] = splitted[-2].split("_")[-1]
         meta['location'] = "Head-Neck"
         meta['sample_number'] = 'unknown'
-        meta['mri_type'] = splitted[-1].split('.')[0]
+        filename = splitted[-1].split('.')[0]
+        meta['mri_type'] = 'T1' if 'T1' in filename else 'T2' if 'T2' in filename else 'OT' if 'ROI' in filename else filename
         meta['dataset_split'] = 'training' if 'Training' in file_path else 'testing' if 'Testing' in file_path else 'unknown'
         meta['path'] = file_path
     else:
@@ -149,7 +151,7 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
 
 def preprocess_slice(mri_meta, dataset_name, normalize_to=None, percentiles=[2,98]):
     slices = []
-    if 'brats2015' in dataset_name.lower():
+    if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower():
         for z in range(mri_meta['OT']['mri'].shape[0]):
             meta = dict()
             for modality in mri_meta.keys():
@@ -240,6 +242,30 @@ def split_train_validation(groups_pattern, ratio_train=0.9):
         valid += filenames[int(ratio_train*len(filenames)):]
     return train, valid
 
+def split_train_validation_test(groups_pattern, ratio_train=0.6, ratio_valid=0.5):
+
+    '''
+    Split in train/validation sets according to SegAN paper and BRATS dataset.
+    :param groups_pattern: A list of patterns that define the groups. For example ['BRATS2015_Training/HGG/*/', 'BRATS2015_Training/LGG/*/'] to stratify according to the patient grade in BRATS
+    '''
+    import glob
+    from random import shuffle
+    train = list()
+    valid = list()
+    test = list()
+    
+    for gp in groups_pattern:
+        filenames = glob.glob(gp)
+        shuffle(filenames)
+        first_valid_sample = int(ratio_train*len(filenames))
+        first_test_sample = first_valid_sample+int(ratio_valid*(len(filenames)-first_valid_sample))
+              
+        train += filenames[0:first_valid_sample]
+        valid += filenames[first_valid_sample:first_test_sample]
+        test += filenames[first_test_sample:]
+    
+    return train, valid, test
+
 
 def rescale(x, xmin, xmax, a, b):
     ''' Rescales x from range (xmin, xmax) to an y in (a, b)'''
@@ -255,15 +281,16 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
     :param dataset_min: Maximum value present in the entire dataset, it is written to each record. Can be found using mha_helpers.
     :param center_crop: size [x, y, z] of the sub volume to center-crop from the 3d mri and labels
     :param normalize_to: can be None (no normalization), 'dataset', 'mri' [Default] - normalized according to all the 3d volume or 'slice'.
+    :param percentiles: [low=2, hi=98] percentiles of the extreme values for normalization
     '''
     # Code adapted from https://www.tensorflow.org/tutorials/load_data/tf_records
 
     def get_one_sample():
         for f, mri_path in enumerate(file_paths):
-
+            #### SPECIFY HERE HOW TO FETCH ALL THE MODALITIES CORRESPONDING TO THE SAME MRI SCAN, according to each dataset
             print("Parsing sample {} of {}".format(f, len(file_paths)))
-            if 'brats2015' in dataset_name.lower():
-                mha_paths = glob.glob(mri_path+'*/*.mha')
+            if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower():
+                mha_paths = glob.glob(mri_path+'*/*.mha') if 'brats2015' in dataset_name.lower() else glob.glob(mri_path+'/*.mha')
                 # Preparing an intermediate record: {'path', 't1', 't1c', 't2', 'flair', 'gt', ...}
 
                 # Finding the target given a filename
@@ -278,15 +305,19 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
                         feature_description[key] = serialize(slice_meta[key])
 
                     yield tf.train.Example(features=tf.train.Features(feature=feature_description))
-                    #return tf.train.Example(features=tf.train.Features(feature=feature_description))
-
+                    #return tf.train.Example(features=tf.train.Features(feature=feature_description))           
+                    
+            else:
+                raise NotImplementedError("Parser for this dataset is not found.")
+            
+            
     record_generator = get_one_sample()
     iscropped  = '_crop' if center_crop else ''
     isnorm = '' if normalize_to is None else '_'+normalize_to
     outpath = '../datasets/{}_{}{}{}.tfrecords'.format(dataset_name, dataset_suffix, iscropped, isnorm)
 
-    options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.GZIP) if use_gzip_compression else None
-    with tf.python_io.TFRecordWriter(outpath, options=options) as writer:
+    options = tf.io.TFRecordOptions(compression_type="GZIP") if use_gzip_compression else None
+    with tf.io.TFRecordWriter(outpath, options=options) as writer:
         print("Writing samples to {}...".format(outpath))
         for sample in record_generator:
             writer.write(sample.SerializeToString())
@@ -309,11 +340,10 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None
     :param take_only: [None] If > 0, only returns <take_only> samples from the given dataset before starting a new iteration.
     :return:
     '''
-    path = '../datasets/{}.tfrecords'.format(name)
-    dataset = tf.data.TFRecordDataset(path, compression_type='GZIP' if use_gzip_compression else "")
-
+    
+    
     def parse_sample(sample_proto):
-        parsed = tf.parse_single_example(sample_proto, get_feature_description(["OT"]+mri_type))
+        parsed = tf.io.parse_single_example(sample_proto, get_feature_description(["OT"]+mri_type))
         # Decoding image arrays
         
         slice_shape = [parsed['OT_x_dimension'.format(mri_type[0])], parsed['OT_y_dimension'], 1]
@@ -333,28 +363,33 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None
             mri_seg = tf.concat([parsed['mri'], parsed['seg']], axis=-1)
             if random_crop:
                 random_crop[-1] = mri_seg.shape[-1] 
-                cropped = tf.random_crop(mri_seg, size=random_crop)
+                cropped = tf.image.random_crop(mri_seg, size=random_crop)
             else:
-                cropped = tf.image.resize_image_with_crop_or_pad(mri_seg,center_crop[0],center_crop[1])
+                cropped = tf.image.resize_with_crop_or_pad(mri_seg,center_crop[0],center_crop[1])
             # Splitting back
             parsed['mri'] = cropped[:,:,:len(mri_type)]
             parsed['seg'] = cropped[:,:,len(mri_type):]
         return parsed
-
-    parsed_dataset = dataset.map(parse_sample, num_parallel_calls=n_threads)
-    parsed_dataset = parsed_dataset.filter(filter) if filter is not None else parsed_dataset
-    parsed_dataset = parsed_dataset.take(take_only) if take_only is not None else parsed_dataset
-    parsed_dataset = parsed_dataset.cache() if cache else parsed_dataset
+    path = '../datasets/{}.tfrecords'.format(name)
+    dataset = tf.data.TFRecordDataset(path, compression_type='GZIP' if use_gzip_compression else "")
+    dataset = dataset.filter(filter) if filter is not None else dataset
+    dataset = dataset.take(take_only) if take_only is not None else dataset
+    
     if shuffle and infinite:
-        parsed_dataset = parsed_dataset.apply(tf.data.experimental.shuffle_and_repeat(shuffle_buffer))
+        dataset = dataset.apply(tf.data.experimental.shuffle_and_repeat(shuffle_buffer))
     else:
-        parsed_dataset = parsed_dataset.shuffle(shuffle_buffer, reshuffle_each_iteration=True) if shuffle else parsed_dataset
-        parsed_dataset = parsed_dataset.repeat() if infinite else parsed_dataset
-    parsed_dataset = parsed_dataset.batch(batch_size)
+        dataset = dataset.shuffle(shuffle_buffer, reshuffle_each_iteration=True) if shuffle else dataset
+        dataset = dataset.repeat() if infinite else dataset
+    dataset = dataset.map(parse_sample, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.cache() if cache else dataset
+    
+    
     if interleave > 1:
-        parsed_dataset = parsed_dataset.interleave(lambda x: tf.data.Dataset.from_tensors(x).repeat(interleave), cycle_length=n_threads, block_length=interleave, num_parallel_calls=n_threads)
-    parsed_dataset = parsed_dataset.prefetch(prefetch_buffer)
-    return parsed_dataset
+        dataset = dataset.interleave(lambda x: tf.data.Dataset.from_tensors(x).repeat(interleave), cycle_length=n_threads, block_length=interleave, num_parallel_calls=n_threads)
+        
+    dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+    return dataset
 
 def find_extreme_values(file_paths, pattern, center_crop=None):
     '''
@@ -387,9 +422,23 @@ def prepare_brats():
     name = 'brats2015-Train-all'
     # Pipeline for preparing BRATS2015 for SegAN
     center_crop = [180,180,128]
-    brats_train, brats_valid = split_train_validation(['../../datasets/BRATS2015/BRATS2015_Training/HGG/*/', '../../datasets/BRATS2015/BRATS2015_Training/LGG/*/'], 0.9)
+    brats_train, brats_valid, brats_test = split_train_validation_test(['../../datasets/BRATS2015/BRATS2015_Training/HGG/*/', '../../datasets/BRATS2015/BRATS2015_Training/LGG/*/'], ratio_train=0.8, ratio_valid=0.5)
     train_min, train_max = find_extreme_values(file_paths=brats_train, pattern='/*/*.mha', center_crop=center_crop)
     valid_min, valid_max = find_extreme_values(file_paths=brats_valid, pattern='/*/*.mha', center_crop=center_crop)
-    pack_dataset(brats_train, 'brats2015-Train-all', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
-    pack_dataset(brats_valid, 'brats2015-Train-all', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')
+    test_min, test_max = find_extreme_values(file_paths=brats_test, pattern='/*/*.mha', center_crop=center_crop)
+    pack_dataset(brats_train, 'brats2015', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
+    pack_dataset(brats_valid, 'brats2015', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')
+    pack_dataset(brats_test, 'brats2015', dataset_suffix='testing', dataset_min=test_min, dataset_max=test_max, center_crop=center_crop, normalize_to='mri')
+
+def prepare_bd2decide():
+    name = 'bd2decide'
+    # Pipeline for preparing BD2Decide for SegAN
+    center_crop = [180,180,128]
+    bd2_train, bd2_valid, bd2_test = split_train_validation_test(['../../datasets/BD2Decide/resampled/T1T2_reshaped/*'], ratio_train=0.8, ratio_valid=0.5)
+    train_min, train_max = find_extreme_values(file_paths=bd2_train, pattern='/*.mha', center_crop=center_crop)
+    valid_min, valid_max = find_extreme_values(file_paths=bd2_valid, pattern='/*.mha', center_crop=center_crop)
+    test_min, test_max = find_extreme_values(file_paths=bd2_test, pattern='/*.mha', center_crop=center_crop)
     
+    pack_dataset(bd2_train, 'BD2Decide-T1T2', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
+    pack_dataset(bd2_valid, 'BD2Decide-T1T2', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')
+    pack_dataset(bd2_test, 'BD2Decide-T1T2', dataset_suffix='testing', dataset_min=test_min, dataset_max=test_max, center_crop=center_crop, normalize_to='mri')
