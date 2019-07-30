@@ -2,6 +2,8 @@ Segan_IO: SegAN model with the modified discriminator input (concatenation inste
 Segan_IO_Concat: Like SegAN_IO, but skip layers in generator concatenate the outputs instead of summing them.
 Segan_IO_Cenc4: Like SegAN_IO, but the critic has 4 layers instead of 3
 
+Custom_MultiFOV: Like SegAN_IO, but both G and D are made of blocks with 3 different kernel sizes in parallel (like in inception network)
+Custom_MultiFOV_D6: Like Custom_MultiFOV, but with a deeper (6 blocks) discriminator
 
 Base models are called:
 {ModelName}_TF2_{dataset}_on_{modality}, which means that the model has been trained on {dataset} using only the MRI corresponding to the given modality

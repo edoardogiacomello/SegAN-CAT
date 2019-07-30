@@ -43,7 +43,7 @@ class DeepMRI():
             tf.random.set_seed(seed)
         
         if arch is None:
-            import SegAN_IO_arch as arch
+            import SegAN_IO_GAP_arch as arch
         
         print("Using architecture: {}".format(arch.__name__))
         self.arch = arch
@@ -228,11 +228,14 @@ class DeepMRI():
         #with tf.GradientTape() as g_tape, tf.GradientTape() as d_tape:
         with tf.GradientTape(persistent=True) as tape:
             g_output = self.generator(x, training=train_g)
-            d_real = self.discriminator([x, y], training=train_d)
-            d_fake = self.discriminator([x, g_output], training=train_d)
+            d_real, d_real_pred, d_real_gap = self.discriminator([x, y], training=train_d)
+            d_fake, f_fake_pred, d_fake_gap = self.discriminator([x, g_output], training=train_d)
+            
+            # Loss for training gap weights
+            d_gap_loss = tf.reduce_mean(tf.abs(1.0 - d_real)) + tf.reduce_mean(tf.abs(d_fake))
             
             g_loss = self.arch.loss_g(d_real, d_fake, g_output, y)
-            d_loss = self.arch.loss_d(d_real, d_fake)
+            d_loss = self.arch.loss_d(d_real, d_fake) + d_gap_loss
         if train_g == True:
             g_gradients = tape.gradient(g_loss, self.generator.trainable_variables)
             self.g_optimizer.apply_gradients(zip(g_gradients, self.generator.trainable_variables))
@@ -246,10 +249,12 @@ class DeepMRI():
     @tf.function
     def validation_step(self, x, y):
         g_output = self.generator(x, training=False)
-        d_real = self.discriminator([x, y], training=False)
-        d_fake = self.discriminator([x, g_output], training=False)
+        d_real, d_real_pred, d_real_gap = self.discriminator([x, y], training=False)
+        d_fake, f_fake_pred, d_fake_gap = self.discriminator([x, g_output], training=False)
         g_loss = self.arch.loss_g(d_real, d_fake, g_output, y)
-        d_loss = self.arch.loss_d(d_real, d_fake)
+        # Loss for training gap weights
+        d_gap_loss = tf.reduce_mean(tf.abs(1.0 - d_real)) + tf.reduce_mean(tf.abs(d_fake))
+        d_loss = self.arch.loss_d(d_real, d_fake) + d_gap_loss
         return self.compute_metrics(y, g_output, g_loss, d_loss)
         
     def alternated_training(self, n_gen, n_disc, start_with='d'):
