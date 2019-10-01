@@ -59,8 +59,7 @@ def build_critic(mri_shape, seg_shape):
     
     c_mri_in = layers.Input(mri_shape)
     c_seg_in = layers.Input(seg_shape)
-    
-    mri_masked = layers.Concatenate()([c_mri_in, c_seg_in])
+    mri_masked = layers.Multiply()([c_mri_in, c_seg_in])
        
     enc1 = C_enc_block(mri_masked, f=64, name='C_enc_1', batchnorm=False)
     enc2 = C_enc_block(enc1, f=128, name='C_enc_2')
@@ -98,5 +97,5 @@ def smooth_dice_loss(x, y):
 
 @tf.function
 def loss_g(d_real, d_fake, y_fake, y_true):
-    return tf.reduce_mean(tf.abs(d_real-d_fake)) + smooth_dice_loss(y_true, y_fake)
+    return tf.reduce_mean(tf.abs(d_real-d_fake)) #+ smooth_dice_loss(y_true, y_fake)
     

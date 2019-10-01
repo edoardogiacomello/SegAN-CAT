@@ -61,7 +61,7 @@ class DeepMRI():
         if load_model=='last' and last_ckpt is not None:
             print("Latest Checkpoint is: {}".format(last_ckpt))
             self.ckpt.restore(last_ckpt)
-            self.current_epoch = self.train_metrics.get_next_epoch()
+            self.current_epoch = int(last_ckpt.split('-')[0].split('_')[-1]) + 1
             print("Loaded model from: {}, next epoch: {}".format(load_model, self.current_epoch))
         else:
             if load_model != 'last':
