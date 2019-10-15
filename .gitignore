@@ -125,7 +125,9 @@ dmypy.json
 
 src/deprecated/
 src/models/
+src/models_other_experiments/
 models
+models_other_experiments
 oldmodels
 datasets
 src/demo/

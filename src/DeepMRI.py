@@ -149,7 +149,8 @@ class DeepMRI():
                                                 prefetch_buffer=1,
                                                 clip_labels_to=1.0,
                                                 infinite=False, 
-                                                cache=False
+                                                cache=False,
+                                                shuffle=False
                                                 )
                 self.test_dataset = lambda: dh.load_dataset('../datasets/brats2015_testing_crop_mri',
                                                 mri_type=mri_types,
@@ -158,7 +159,8 @@ class DeepMRI():
                                                 prefetch_buffer=1,
                                                 clip_labels_to=1.0,
                                                 infinite=False, 
-                                                cache=False
+                                                cache=False,
+                                                shuffle=False
                                                 )
             
         self.train_dataset_length = None
@@ -186,33 +188,32 @@ class DeepMRI():
         # Predicted Condition Negative
         PCN = tf.math.logical_not(PCP)
 
-        TP = tf.math.count_nonzero(tf.math.logical_and(CP, PCP))
-        FP = tf.math.count_nonzero(tf.math.logical_and(CN, PCP))
-        FN = tf.math.count_nonzero(tf.math.logical_and(CP, PCN))
-        TN = tf.math.count_nonzero(tf.math.logical_and(CN, PCN))
+        TP = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CP, PCP), axis=1), axis=1)
+        FP = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CN, PCP), axis=1), axis=1)
+        FN = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CP, PCN), axis=1), axis=1)
+        TN = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CN, PCN), axis=1), axis=1)
 
+        g_loss_rep = tf.tile([g_loss], [y_pred.shape[0]])
+        d_loss_rep = tf.tile([d_loss], [y_pred.shape[0]])
         # TPR/Recall/Sensitivity/HitRate, Probability of detection
-        sensitivity = TP/(TP+FN)
+        sensitivity = tf.where(tf.greater(TP+FN, 0), TP/(TP+FN), 1.0)
         # TNR/Specificity/Selectivity, Probability of false alarm
-        specificity = TN/(TN+FP)
+        specificity = tf.where(tf.greater(TN+FP, 0), TN/(TN+FP), 1.0)
         # False Positive Rate / fall-out
         false_positive_rate = 1 - specificity
         # Precision/ Positive predictive value
-        precision = TP/(TP+FP)
+        precision = tf.where(tf.greater(TP+FP, 0), TP/(TP+FP), 1.0)
         # Dice score (Equivalent to F1-Score)
-        dice_score = 2*(tf.math.count_nonzero(tf.math.logical_and(CP,PCP))/(tf.math.count_nonzero(CP)+tf.math.count_nonzero(PCP)))
+        dice_score = tf.where(tf.greater(TP+FP+FN, 0), (2*TP)/(2*TP+FP+FN), 1.0)
         # (Balanced) Accuracy - Works with imbalanced datasets
         balanced_accuracy = (sensitivity + specificity)/2.0
         
-        
         # For debugging the loss..
-        smooth_dice_loss = self.arch.smooth_dice_loss(y_true, y_pred)
-        mae_distance = tf.reduce_mean(tf.metrics.mae(y_true,y_pred))
-        
-        
-        
+        smooth_dice_loss = tf.tile([self.arch.smooth_dice_loss(y_true, y_pred)], [y_pred.shape[0]])
+        mae_distance = tf.reduce_mean(tf.metrics.mae(y_true,y_pred), axis=[2, 1])
+                
         # When editing this also edit the Logger class accordingly
-        return [g_loss, d_loss, sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy, smooth_dice_loss, mae_distance]
+        return [g_loss_rep, d_loss_rep, sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy, smooth_dice_loss, mae_distance]
         
         
     @tf.function
@@ -335,10 +336,18 @@ class DeepMRI():
         eval_logger = Logger(csv_path)
         eval_dataset = self.validation_dataset if dataset == 'validation' else self.test_dataset
         self.eval_progress = tk.utils.Progbar(None, stateful_metrics=eval_logger.metrics_names)
+        results = list()
         for i, row in enumerate(eval_dataset()):
             eval_metrics = self.validation_step(row['mri'], row['seg'])
+            results.append(np.stack([met.numpy().squeeze().astype(np.float32) for met in eval_metrics], axis=1))
             eval_logger.update(eval_metrics, self.eval_progress, i)
-        return eval_logger.on_epoch_end(0)
+        
+        # Preparing DataFrame
+        df = pd.DataFrame(np.concatenate(results), columns=eval_logger.metrics_names)
+        df['model'] = self.model_name
+        df['run'] = dataset
+        df = df.reset_index().rename(columns={'index':'slice'})
+        return df
         
 
     def show_prediction(self, ref_sample, save_to, mri_index=0):

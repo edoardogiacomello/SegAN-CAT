@@ -381,7 +381,7 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None
         dataset = dataset.shuffle(shuffle_buffer, reshuffle_each_iteration=True) if shuffle else dataset
         dataset = dataset.repeat() if infinite else dataset
     dataset = dataset.map(parse_sample, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-    dataset = dataset.batch(batch_size)
+    dataset = dataset.batch(batch_size) if batch_size > 0 else dataset
     dataset = dataset.cache() if cache else dataset
     
     
