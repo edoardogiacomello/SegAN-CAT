@@ -1,0 +1,5 @@
+model,run,Target Dataset,Target Modality,dice_score,precision,sensitivity
+Segan_IO_TF2_brats_on_T1c,testing,brats,T1,0.44553086,0.56653804,0.42659298
+Segan_IO_TF2_brats_on_T1c,testing,brats,T1c,0.5822281,0.62593603,0.5804558
+Segan_IO_TF2_brats_on_T1c,testing,brats,T2,0.20004393,0.12765425,0.63249826
+Segan_IO_TF2_brats_on_T1c,testing,brats,Flair,0.3998841,0.32274145,0.6340439

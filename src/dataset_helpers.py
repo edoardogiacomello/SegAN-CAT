@@ -4,6 +4,12 @@ import os
 import glob
 import pandas as pd
 import tensorflow as tf
+# Setting allow_growth for gpu
+physical_devices = tf.config.experimental.list_physical_devices('GPU')
+if len(physical_devices) > 0:
+    tf.config.experimental.set_memory_growth(physical_devices[0], True)
+else:
+    print("No GPU found, model running on CPU")
 
 datasets_path_pattern = {
     'brats2015-Test-all': '../../datasets/BRATS2015/Testing/*/*/*/*.mha',
@@ -152,7 +158,11 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
 def preprocess_slice(mri_meta, dataset_name, normalize_to=None, percentiles=[2,98]):
     slices = []
     if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower():
-        for z in range(mri_meta['OT']['mri'].shape[0]):
+        # Shapes of each modality
+        shapes = [mri_meta[v]['mri'].shape for v in list(mri_meta.keys())]
+        assert np.all([np.equal(s, shapes[0]) for s in shapes]), "Modalities for sample {} have not the same shape.".format(tuple(mri_meta.items())[0][1]['path'])
+
+        for z in range(shapes[0][0]):
             meta = dict()
             for modality in mri_meta.keys():
                 # For each modality we have to duplicate the meta keys (except the data)
@@ -169,7 +179,7 @@ def preprocess_slice(mri_meta, dataset_name, normalize_to=None, percentiles=[2,9
                 meta['{}_{}'.format(modality, 'mri')] = mri_slice.astype(np.float32).tobytes()
             slices.append(meta)
     else:
-        raise NotImplementedError
+        raise NotImplementedError()
     return slices
 
 
@@ -184,14 +194,27 @@ def load_itk(filename):
     image = image.transpose((0, 2, 1))
 
     # Read the origin of the ct_scan, will be used to convert the coordinates from world to voxel and vice versa.
-    origin = np.array(itkimage.GetOrigin())[[2,0,1]]
+    origin = np.array(itkimage.GetOrigin())[[0,2,1]]
 
     # Read the spacing along each dimension
-    spacing = np.array(itkimage.GetSpacing())[[2,0,1]]
+    spacing = np.array(itkimage.GetSpacing())[[0,2,1]]
 
     return image, origin, spacing
 
-
+def save_itk(image, origin, spacing, filename):
+    ''' 
+    Takes as input a segmentation and saves it to a .mha file.
+    WARNING: This function applies reverse transformations with respect to load_itk, hence it's not suitable as a general purpose write function. Expected dimension order is (Z, X, Y), which will be converted in (Z, Y, X) [simpleitk format]
+    '''
+    
+    # Inverting the transformations done in load_itk()
+    image = image.transpose((0, 2, 1))
+    origin = origin[[0,2,1]]
+    spacing = spacing[[0,2,1]]
+    itkimage = sitk.GetImageFromArray(image, isVector=False)
+    itkimage.SetSpacing(spacing)
+    itkimage.SetOrigin(origin)
+    sitk.WriteImage(itkimage, filename, True)
 
 
 def _bytes_feature(value):
@@ -324,11 +347,12 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
         print("Samples written to {}")
 
 
-def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, clip_labels_to=0.0, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
+def load_dataset(name, mri_type, center_crop=None, random_crop=None, has_ground_truth=True, filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, clip_labels_to=0.0, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
     '''
     Load a tensorflow dataset <name> (see definition in dataset_helpers).
     :param name: Name of the dataset
     :param mri_type: list of MRI sequencing to include in the dataset. Each modality will form a new channel in the resulting sample.
+    :param has_ground_truth: Whether the dataset to load contains Ground Truths or not.
     :param filter: Lambda expression for filtering the data
     :param batch_size: batch size of the returned tensors
     :param cache: [True] wether to cache data in main memory
@@ -343,33 +367,50 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None
     
     
     def parse_sample(sample_proto):
-        parsed = tf.io.parse_single_example(sample_proto, get_feature_description(["OT"]+mri_type))
+        if has_ground_truth:
+            features_description = get_feature_description(["OT"]+mri_type)
+        else:
+            features_description = get_feature_description(mri_type)
+        parsed = tf.io.parse_single_example(sample_proto, features_description)
         # Decoding image arrays
-        
-        slice_shape = [parsed['OT_x_dimension'.format(mri_type[0])], parsed['OT_y_dimension'], 1]
-        # Decoding the ground truth
-        parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed['OT_mri'], tf.float32), shape=slice_shape), dtype=cast_to)
+        slice_shape = [parsed['{}_x_dimension'.format(mri_type[0])], parsed['{}_y_dimension'.format(mri_type[0])], 1]
+                
         # Decode each channel and stack in a 3d volume
         stacked_mri = list()
         for mod in mri_type:
             stacked_mri.append(tf.cast(tf.reshape(tf.io.decode_raw(parsed['{}_mri'.format(mod)], tf.float32), shape=slice_shape), dtype=cast_to))
         parsed['mri'] = tf.concat(stacked_mri, axis=-1)
-        # Clipping the labels if requested
-        parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to) if clip_labels_to else parsed['seg']
         
-        # Cropping
-        if random_crop or center_crop:
-            # Stacking the mri and the label to align the crop shape
-            mri_seg = tf.concat([parsed['mri'], parsed['seg']], axis=-1)
-            if random_crop:
-                random_crop[-1] = mri_seg.shape[-1] 
-                cropped = tf.image.random_crop(mri_seg, size=random_crop)
-            else:
-                cropped = tf.image.resize_with_crop_or_pad(mri_seg,center_crop[0],center_crop[1])
-            # Splitting back
-            parsed['mri'] = cropped[:,:,:len(mri_type)]
-            parsed['seg'] = cropped[:,:,len(mri_type):]
+        # Decoding the ground truth
+        if has_ground_truth:
+            parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed['OT_mri'], tf.float32), shape=slice_shape), dtype=cast_to)
+            
+            # Clipping the labels if requested
+            parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to) if clip_labels_to else parsed['seg']
+        
+            # Cropping (With ground truth)
+            if random_crop or center_crop:
+                # Stacking the mri and the label to align the crop shape
+                mri_seg = tf.concat([parsed['mri'], parsed['seg']], axis=-1)
+                if random_crop:
+                    random_crop[-1] = mri_seg.shape[-1] 
+                    cropped = tf.image.random_crop(mri_seg, size=random_crop)
+                else:
+                    cropped = tf.image.resize_with_crop_or_pad(mri_seg,center_crop[0],center_crop[1])
+                # Splitting back
+                parsed['mri'] = cropped[:,:,:len(mri_type)]
+                parsed['seg'] = cropped[:,:,len(mri_type):]
+        else:
+            # Cropping (With ground truth)
+            if random_crop or center_crop:
+                # Stacking the mri and the label to align the crop shape
+                if random_crop:
+                    random_crop[-1] = parsed['mri'].shape[-1] 
+                    parsed['mri'] = tf.image.random_crop(parsed['mri'], size=random_crop)
+                else:
+                    parsed['mri'] = tf.image.resize_with_crop_or_pad(parsed['mri'],center_crop[0],center_crop[1])
         return parsed
+    
     path = '../datasets/{}.tfrecords'.format(name)
     dataset = tf.data.TFRecordDataset(path, compression_type='GZIP' if use_gzip_compression else "")
     dataset = dataset.filter(filter) if filter is not None else dataset
@@ -388,7 +429,7 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, filter=None
     if interleave > 1:
         dataset = dataset.interleave(lambda x: tf.data.Dataset.from_tensors(x).repeat(interleave), cycle_length=n_threads, block_length=interleave, num_parallel_calls=n_threads)
         
-    dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+    dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE) if prefetch_buffer > 0 else dataset
     return dataset
 
 def find_extreme_values(file_paths, pattern, center_crop=None):
@@ -429,7 +470,7 @@ def prepare_brats():
     pack_dataset(brats_train, 'brats2015', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
     pack_dataset(brats_valid, 'brats2015', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')
     pack_dataset(brats_test, 'brats2015', dataset_suffix='testing', dataset_min=test_min, dataset_max=test_max, center_crop=center_crop, normalize_to='mri')
-
+    
 def prepare_bd2decide():
     name = 'bd2decide'
     # Pipeline for preparing BD2Decide for SegAN

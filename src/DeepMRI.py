@@ -117,7 +117,8 @@ class DeepMRI():
                                     prefetch_buffer=1,
                                     clip_labels_to=1.0,
                                     infinite=False,
-                                    cache=False
+                                    cache=False,
+                                    shuffle=False
                                     ) 
             
             self.test_dataset =  lambda: dh.load_dataset('../datasets/BD2Decide-T1T2_testing_crop_mri',
@@ -127,7 +128,8 @@ class DeepMRI():
                                     prefetch_buffer=1,
                                     clip_labels_to=1.0,
                                     infinite=False,
-                                    cache=False
+                                    cache=False,
+                                    shuffle=False
                                     )
         else:
             if dataset == 'brats':
@@ -188,10 +190,10 @@ class DeepMRI():
         # Predicted Condition Negative
         PCN = tf.math.logical_not(PCP)
 
-        TP = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CP, PCP), axis=1), axis=1)
-        FP = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CN, PCP), axis=1), axis=1)
-        FN = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CP, PCN), axis=1), axis=1)
-        TN = tf.math.reduce_sum(tf.math.count_nonzero(tf.math.logical_and(CN, PCN), axis=1), axis=1)
+        TP = tf.math.count_nonzero(tf.math.logical_and(CP, PCP), axis=(1, 2))
+        FP = tf.math.count_nonzero(tf.math.logical_and(CN, PCP), axis=(1, 2))
+        FN = tf.math.count_nonzero(tf.math.logical_and(CP, PCN), axis=(1, 2))
+        TN = tf.math.count_nonzero(tf.math.logical_and(CN, PCN), axis=(1, 2))
 
         g_loss_rep = tf.tile([g_loss], [y_pred.shape[0]])
         d_loss_rep = tf.tile([d_loss], [y_pred.shape[0]])
@@ -213,7 +215,7 @@ class DeepMRI():
         mae_distance = tf.reduce_mean(tf.metrics.mae(y_true,y_pred), axis=[2, 1])
                 
         # When editing this also edit the Logger class accordingly
-        return [g_loss_rep, d_loss_rep, sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy, smooth_dice_loss, mae_distance]
+        return [g_loss_rep, d_loss_rep, sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy, smooth_dice_loss, mae_distance, TP, FP, FN, TN]
         
         
     @tf.function
@@ -327,7 +329,7 @@ class DeepMRI():
                         self.show_prediction(self.ref_sample, save_to=self.save_path+self.model_name+"best_{}_{}.png".format(m, e))
                     self.ckpt.save(self.save_path+"best_{}_{}".format(m, e))
                
-    def evaluate(self, csv_path, dataset='validation'):
+    def evaluate(self, csv_path, mri_types, dataset='validation'):
         ''' 
         Evaluate the laoded model on the given dataset ('validation' or 'testing'). Dataset must be loaded beforehand.
         :param csv_path: csv to save the results 
@@ -337,17 +339,21 @@ class DeepMRI():
         eval_dataset = self.validation_dataset if dataset == 'validation' else self.test_dataset
         self.eval_progress = tk.utils.Progbar(None, stateful_metrics=eval_logger.metrics_names)
         results = list()
+        paths = {t: list() for t in mri_types}
+        
         for i, row in enumerate(eval_dataset()):
             eval_metrics = self.validation_step(row['mri'], row['seg'])
             results.append(np.stack([met.numpy().squeeze().astype(np.float32) for met in eval_metrics], axis=1))
             eval_logger.update(eval_metrics, self.eval_progress, i)
-        
+            for t in mri_types:
+                paths[t] += [s.decode('utf-8') for s in row[t+'_path'].numpy()]
         # Preparing DataFrame
-        df = pd.DataFrame(np.concatenate(results), columns=eval_logger.metrics_names)
-        df['model'] = self.model_name
-        df['run'] = dataset
-        df = df.reset_index().rename(columns={'index':'slice'})
-        return df
+        per_slice_stats = pd.DataFrame(np.concatenate(results), columns=eval_logger.metrics_names)
+        for t in mri_types:
+            per_slice_stats['path_{}'.format(t)] = paths[t]
+        per_slice_stats['model'] = self.model_name
+        per_slice_stats['run'] = dataset
+        return per_slice_stats
         
 
     def show_prediction(self, ref_sample, save_to, mri_index=0):
@@ -370,7 +376,7 @@ class DeepMRI():
 class Logger():
     ''' Class for keeping running average of the statistics and returns the metrics for the current epoch'''
     def __init__(self, csv_path, start_from=None):
-        self.metrics_names = ['loss_g','loss_d','sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'smooth_dice_loss', 'mae']
+        self.metrics_names = ['loss_g','loss_d','sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'smooth_dice_loss', 'mae', 'true_positives', 'false_positives', 'false_negatives', 'true_negatives']
         # Criteria for determining under what condition a given metric value x is better then y.
         self.criteria = {'loss_g': 'max',
                          'loss_d': 'min',
@@ -381,7 +387,12 @@ class Logger():
                          'dice_score': 'max',
                          'balanced_accuracy': 'max',
                          'smooth_dice_loss':'min',
-                         'mae':'min'}
+                         'mae':'min', 
+                         'true_positives':'max',
+                         'false_positives':'min',
+                         'false_negatives':'min',
+                         'true_negatives':'max'}
+        
         
         self.batch_means = [tk.metrics.Mean() for name in self.metrics_names]
         

@@ -1,0 +1,27 @@
+model,run,dice_score,precision,sensitivity,Model Type,Fine Tuning,Source Modality,Target Modality
+Segan_TF2_brats_ALL,testing,0.82309383,0.907388,0.7745284,Base Model,From Scratch,ALL,ALL
+Segan_TF2_brats_ALL,validation,0.8276828,0.8943577,0.7963766,Base Model,From Scratch,ALL,ALL
+Segan_NoDice_TF2_brats_ALL,testing,0.7043612,0.7562543,0.69649124,Base Model,From Scratch,ALL,ALL
+Segan_NoDice_TF2_brats_ALL,validation,0.7054151,0.7609286,0.6919029,Base Model,From Scratch,ALL,ALL
+Segan_IO_TF2_brats_ALL,testing,0.8568338,0.8887739,0.84207076,Base Model,From Scratch,ALL,ALL
+Segan_IO_TF2_brats_ALL,validation,0.86094016,0.87498003,0.8620961,Base Model,From Scratch,ALL,ALL
+Segan_IO_TF2_brats_on_T1,testing,0.5304278,0.5369505,0.56724226,Base Model,From Scratch,T1,T1
+Segan_IO_TF2_brats_on_T1,validation,0.54537076,0.6050069,0.5458457,Base Model,From Scratch,T1,T1
+Segan_IO_TF2_brats_on_T1c,testing,0.5822281,0.62593603,0.5804558,Base Model,From Scratch,T1c,T1c
+Segan_IO_TF2_brats_on_T1c,validation,0.5730689,0.59911394,0.58099806,Base Model,From Scratch,T1c,T1c
+Segan_IO_TF2_brats_on_T2,testing,0.74398816,0.7818337,0.7513236,Base Model,From Scratch,T2,T2
+Segan_IO_TF2_brats_on_T2,validation,0.6975745,0.7628867,0.69592524,Base Model,From Scratch,T2,T2
+Segan_IO_TF2_brats_on_FLAIR,testing,0.80403465,0.87172616,0.7701494,Base Model,From Scratch,FLAIR,FLAIR
+Segan_IO_TF2_brats_on_FLAIR,validation,0.815855,0.84402865,0.8041951,Base Model,From Scratch,FLAIR,FLAIR
+Transfer_Brats_Flair_to_T1,testing,0.4829913,0.46959504,0.56331664,Transfer,Full,Flair,T1
+Transfer_Brats_Flair_to_T1,validation,0.5085142,0.5380131,0.54283196,Transfer,Full,Flair,T1
+Transfer_Brats_Flair_to_T1_freeze_all,testing,0.5701435,0.57301295,0.619754,Transfer,Generator,Flair,T1
+Transfer_Brats_Flair_to_T1_freeze_all,validation,0.59944755,0.656183,0.59746116,Transfer,Generator,Flair,T1
+Transfer_Brats_Flair_to_T1c,testing,0.53707457,0.6555912,0.49308872,Transfer,Full,Flair,T1c
+Transfer_Brats_Flair_to_T1c,validation,0.5412321,0.6517777,0.5013181,Transfer,Full,Flair,T1c
+Transfer_Brats_Flair_to_T1c-freeze_all,testing,0.5463458,0.62831026,0.51117396,Transfer,Generator,Flair,T1c
+Transfer_Brats_Flair_to_T1c-freeze_all,validation,0.55419344,0.654772,0.5184118,Transfer,Generator,Flair,T1c
+Transfer_Brats_Flair_to_T2,testing,0.7575791,0.8088869,0.7261631,Transfer,Full,Flair,T2
+Transfer_Brats_Flair_to_T2,validation,0.7204651,0.7752963,0.69945556,Transfer,Full,Flair,T2
+Transfer_Brats_Flair_to_T2_freeze_all,testing,0.79462385,0.8305794,0.777204,Transfer,Generator,Flair,T2
+Transfer_Brats_Flair_to_T2_freeze_all,validation,0.77515864,0.80773467,0.7672477,Transfer,Generator,Flair,T2
