@@ -84,10 +84,18 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
     '''
     meta = dict()
     # Parsing meta from paths
-    if 'BRATS2015' in file_path:
+    if 'BraTS19' in file_path:
+        meta['dataset_name'], meta['dataset_version'], meta['patient'], meta['patient_mri_seq'], meta['mri_type'] = file_path.replace('.nii.gz', '').split('/')[-1].split('_')
+        meta['patient_grade'] = file_path.split('/')[-3]
+        meta['location'] = 'Brain'
+        meta['sample_number'] = 'unknown'
+        meta['path'] = file_path
+        meta['dataset_split'] = 'training' if 'Training' in file_path.split('/')[-4] else 'testing' if 'Validation' in file_path.split('/')[-4] else 'unknown'
+        
+    elif 'BRATS2015' in file_path:
         splitted = file_path.split('/')
         meta['dataset_name'] = 'BRATS2015'
-        meta['patient_grade'] = 'HIGH' if splitted[-4]=='HGG' else 'LOW' if splitted[-4]=='LGG' else 'unknown'
+        meta['patient_grade'] = splitted[-4]
         _, meta['dataset_version'], meta['patient'], meta['patient_mri_seq'] = splitted[-3].split("_")
         _, meta['location'], _, _, meta['mri_type'], meta['sample_number'], ext = splitted[-1].split(".")
         meta['dataset_split'] = 'training' if 'Training' in file_path else 'testing' if 'Testing' in file_path else 'unknown'
@@ -133,7 +141,7 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
               int(image.shape[1] / 2 - center_crop[0] / 2):int(image.shape[1] / 2 + center_crop[0] / 2),
               int(image.shape[2] / 2 - center_crop[1] / 2):int(image.shape[2] / 2 + center_crop[1] / 2)]
         
-    if normalize_to and meta['mri_type'] != "OT": # We don't normalize label maps here
+    if normalize_to and meta['mri_type'] not in ["OT", "seg"]: # We don't normalize label maps here
         if normalize_to == 'dataset':
             max_value = dataset_max
             min_value = dataset_min
@@ -157,7 +165,7 @@ def preprocess_mha(file_path, dataset_min, dataset_max, center_crop=[180,180,128
 
 def preprocess_slice(mri_meta, dataset_name, normalize_to=None, percentiles=[2,98]):
     slices = []
-    if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower():
+    if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower() or 'brats2019' in dataset_name.lower():
         # Shapes of each modality
         shapes = [mri_meta[v]['mri'].shape for v in list(mri_meta.keys())]
         assert np.all([np.equal(s, shapes[0]) for s in shapes]), "Modalities for sample {} have not the same shape.".format(tuple(mri_meta.items())[0][1]['path'])
@@ -165,14 +173,14 @@ def preprocess_slice(mri_meta, dataset_name, normalize_to=None, percentiles=[2,9
         for z in range(shapes[0][0]):
             meta = dict()
             for modality in mri_meta.keys():
-                # For each modality we have to duplicate the meta keys (except the data)
+                # For each modality we have to duplicate the meta keys (except for the data)
                 meta.update({'{}_{}'.format(modality, k):mri_meta[modality][k] for k in mri_meta[modality] if k != 'mri'})
                 mri_slice = mri_meta[modality]['mri'][z,...]
 
                 meta['{}_slice_lperc'.format(modality)], meta['{}_slice_hperc'.format(modality)] = np.percentile(mri_slice, percentiles).astype(np.float32)
                 meta['{}_slice_min'.format(modality)], meta['{}_slice_max'.format(modality)] = mri_slice.min().astype(np.float32), mri_slice.max().astype(np.float32)
 
-                if normalize_to == 'slice' and modality != "OT": # we don't normalize labels
+                if normalize_to == 'slice' and modality not in ["OT", "seg"]: # we don't normalize labels
                     # rescaling
                     mri_slice = rescale(mri_slice, meta['{}_slice_lperc'.format(modality)], meta['{}_slice_hperc'.format(modality)], 0, 1)
                     mri_slice = np.clip(mri_slice, 0, 1)
@@ -312,8 +320,9 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
         for f, mri_path in enumerate(file_paths):
             #### SPECIFY HERE HOW TO FETCH ALL THE MODALITIES CORRESPONDING TO THE SAME MRI SCAN, according to each dataset
             print("Parsing sample {} of {}".format(f, len(file_paths)))
-            if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower():
-                mha_paths = glob.glob(mri_path+'*/*.mha') if 'brats2015' in dataset_name.lower() else glob.glob(mri_path+'/*.mha')
+
+            if 'brats2015' in dataset_name.lower() or 'bd2decide' in dataset_name.lower() or 'brats2019' in dataset_name.lower():
+                mha_paths = glob.glob(mri_path+'*/*.mha') if 'brats2015' in dataset_name.lower() else glob.glob(mri_path+'*.nii.gz') if 'brats2019' in dataset_name.lower() else glob.glob(mri_path+'/*.mha')
                 # Preparing an intermediate record: {'path', 't1', 't1c', 't2', 'flair', 'gt', ...}
 
                 # Finding the target given a filename
@@ -347,12 +356,12 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
         print("Samples written to {}")
 
 
-def load_dataset(name, mri_type, center_crop=None, random_crop=None, has_ground_truth=True, filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, clip_labels_to=0.0, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
+def load_dataset(name, mri_type, clip_labels_to, center_crop=None, random_crop=None, ground_truth_column_name="seg", filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
     '''
     Load a tensorflow dataset <name> (see definition in dataset_helpers).
     :param name: Name of the dataset
     :param mri_type: list of MRI sequencing to include in the dataset. Each modality will form a new channel in the resulting sample.
-    :param has_ground_truth: Whether the dataset to load contains Ground Truths or not.
+    :param ground_truth_column_name: Column name of the ground truth. "OT" for Brats2015, "seg" for Brats2019, None for challenge testing sets.
     :param filter: Lambda expression for filtering the data
     :param batch_size: batch size of the returned tensors
     :param cache: [True] wether to cache data in main memory
@@ -367,8 +376,8 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, has_ground_
     
     
     def parse_sample(sample_proto):
-        if has_ground_truth:
-            features_description = get_feature_description(["OT"]+mri_type)
+        if ground_truth_column_name:
+            features_description = get_feature_description([ground_truth_column_name]+mri_type)
         else:
             features_description = get_feature_description(mri_type)
         parsed = tf.io.parse_single_example(sample_proto, features_description)
@@ -381,13 +390,16 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, has_ground_
             stacked_mri.append(tf.cast(tf.reshape(tf.io.decode_raw(parsed['{}_mri'.format(mod)], tf.float32), shape=slice_shape), dtype=cast_to))
         parsed['mri'] = tf.concat(stacked_mri, axis=-1)
         
-        # Decoding the ground truth
-        if has_ground_truth:
-            parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed['OT_mri'], tf.float32), shape=slice_shape), dtype=cast_to)
+        # Decoding the ground truth (If any)
+        if ground_truth_column_name is not None:
+            parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed[ground_truth_column_name+'_mri'], tf.float32), shape=slice_shape), dtype=cast_to)
             
-            # Clipping the labels if requested
-            parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to) if clip_labels_to else parsed['seg']
-        
+            # Clipping the labels to the given maximum value
+            parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to)
+            
+            # One_hot encoding for the segmentation (Discarding Null label)
+            parsed['seg'] = tf.one_hot(tf.cast(parsed['seg'], tf.int32)[...,0], clip_labels_to+1)
+            
             # Cropping (With ground truth)
             if random_crop or center_crop:
                 # Stacking the mri and the label to align the crop shape
@@ -401,7 +413,7 @@ def load_dataset(name, mri_type, center_crop=None, random_crop=None, has_ground_
                 parsed['mri'] = cropped[:,:,:len(mri_type)]
                 parsed['seg'] = cropped[:,:,len(mri_type):]
         else:
-            # Cropping (With ground truth)
+            # Cropping (Without ground truth)
             if random_crop or center_crop:
                 # Stacking the mri and the label to align the crop shape
                 if random_crop:
@@ -446,12 +458,11 @@ def find_extreme_values(file_paths, pattern, center_crop=None):
     min_v = 0
 
     for i, f in enumerate(mha_files):
+        if 'OT' in f or 'seg' in f:
+            continue 
         itkimage = sitk.GetArrayFromImage(sitk.ReadImage(f)).transpose((0, 2, 1))
         if center_crop:
             itkimage = itkimage[int(itkimage.shape[0]/2 - center_crop[2]/2):int(itkimage.shape[0]/2 + center_crop[2]/2), int(itkimage.shape[1]/2 - center_crop[0]/2):int(itkimage.shape[1]/2 + center_crop[0]/2),int(itkimage.shape[2]/2 - center_crop[1]/2):int(itkimage.shape[2]/2 + center_crop[1]/2)]
-        if itkimage.max == 4:
-            # This is a label, skip
-            continue
    
         max_v = max(itkimage.max(), max_v)
         min_v = min(itkimage.min(), min_v)
@@ -459,7 +470,7 @@ def find_extreme_values(file_paths, pattern, center_crop=None):
     return min_v, max_v
   
 
-def prepare_brats():
+def prepare_brats2015():
     name = 'brats2015-Train-all'
     # Pipeline for preparing BRATS2015 for SegAN
     center_crop = [180,180,128]
@@ -483,3 +494,13 @@ def prepare_bd2decide():
     pack_dataset(bd2_train, 'BD2Decide-T1T2', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
     pack_dataset(bd2_valid, 'BD2Decide-T1T2', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')
     pack_dataset(bd2_test, 'BD2Decide-T1T2', dataset_suffix='testing', dataset_min=test_min, dataset_max=test_max, center_crop=center_crop, normalize_to='mri')
+
+def prepare_brats2019():
+    name = 'brats2019-Training'
+    # Pipeline for preparing BRATS2015 for SegAN
+    center_crop = [180,180,128]
+    brats_train, brats_valid, brats_test = split_train_validation(['../../datasets/BRATS2019/MICCAI_BraTS_2019_Data_Training/HGG/*/', '../../datasets/BRATS2019/MICCAI_BraTS_2019_Data_Training/LGG/*/'], ratio_train=0.9)
+    train_min, train_max = find_extreme_values(file_paths=brats_train, pattern='/*/*.nii.gz', center_crop=center_crop)
+    valid_min, valid_max = find_extreme_values(file_paths=brats_valid, pattern='/*/*.nii.gz', center_crop=center_crop)
+    pack_dataset(brats_train, 'brats2019', dataset_suffix='training', dataset_min=train_min, dataset_max=train_max, center_crop=center_crop, normalize_to='mri')
+    pack_dataset(brats_valid, 'brats2019', dataset_suffix='validation', dataset_min=valid_min, dataset_max=valid_max, center_crop=center_crop, normalize_to='mri')

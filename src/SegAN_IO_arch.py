@@ -42,7 +42,10 @@ def build_segmentor(mri_shape, seg_channels=1, clip=False):
     dec1 = S_dec_block(skip2, f=64, name='S_dec_1')
     skip1 = layers.Add(name='S_skip1')([dec1, enc1])
     out_unb = S_dec_block(skip1, f=seg_channels, name='out_unbound', batchnorm=False, relu=False)
-    out = layers.Activation('sigmoid')(out_unb)
+    if seg_channels == 1:
+        out = layers.Activation('sigmoid')(out_unb)
+    else:
+        out = layers.Activation('softmax')(out_unb)
     
     # testout = layers.Conv2D(1, 3, padding='same')(s_mri_in)
     return Model([s_mri_in], out, name='S')
@@ -79,24 +82,11 @@ def loss_d(d_real, d_fake):
     return -tf.reduce_mean(tf.abs(d_real-d_fake))
 
 @tf.function
-def smooth_dice_loss(x, y):
-    ''' Dice loss continuous approximation used in SegAN paper. Converted from 
-    https://github.com/YuanXue1993/SegAN/blob/master/train.py'''
-    eps = 1e-6
-    num = x*y
-    num = tf.reduce_sum(num, axis=1)
-    num = tf.reduce_sum(num, axis=1)
-    den1 = x*x
-    den1 = tf.reduce_sum(den1, axis=1)
-    den1 = tf.reduce_sum(den1, axis=1)
-    den2 = y*y
-    den2 = tf.reduce_sum(den2, axis=1)
-    den2 = tf.reduce_sum(den2, axis=1)
-    dice=2*((num+eps)/(den1+den2+2*eps))
-    dice_total=1-1*tf.reduce_sum(dice)/dice.shape[0]
-    return dice_total
+def differentiable_dice_loss(g, p, axis=(1,2), eps=1e-6):
+    return 1.0 - (eps + 2.0*tf.reduce_sum(p*g, axis=axis)) / (eps + tf.reduce_sum(tf.pow(p, 2), axis=axis) + tf.reduce_sum(tf.pow(g, 2), axis=axis))
+    
 
 @tf.function
 def loss_g(d_real, d_fake, y_fake, y_true):
-    return tf.reduce_mean(tf.abs(d_real-d_fake)) + smooth_dice_loss(y_true, y_fake)
+    return tf.reduce_mean(tf.abs(d_real-d_fake)) + tf.reduce_mean(differentiable_dice_loss(y_true, y_fake))
     

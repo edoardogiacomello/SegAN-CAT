@@ -18,11 +18,15 @@ else:
 
 
 class DeepMRI():
-    def __init__(self, batch_size, size, mri_channels, model_name='DeepMRI', max_epochs=100000):
+    def __init__(self, batch_size, size, mri_channels, output_labels=1, model_name='DeepMRI', max_epochs=100000):
         self.batch_size = batch_size
         self.size = size
+        self.output_labels = output_labels
         self.mri_shape = (size, size, mri_channels)
-        self.label_shape = (size, size, 1)
+        if output_labels == 1:
+            self.label_shape = (size, size, output_labels)
+        else:
+            self.label_shape = (size, size, output_labels + 1)
         self.train_dataset = None
         self.max_epochs = max_epochs
         self.ref_sample = None
@@ -33,11 +37,11 @@ class DeepMRI():
         self.train_dataset = None
         self.validation_dataset = None
         self.test_dataset = None
-
-    
-    def build_model(self, load_model, seed, arch=None, current_epoch=None):
-        ''' If load_model is None or False, creates a new model, if is 'last' load the most recent checkpoint, otherwise loads the specified one.
-            :param current_epoch: If set, import the history of the given load_model checkpoint into this model. Has effect only if a specific checkpoint is given and no other saved checkpoints are found in the model folder.
+        self.metrics_names = ['sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'true_positives', 'false_positives', 'false_negatives', 'true_negatives']
+        self.log_column_names = [met+'_'+str(lab) for met in self.metrics_names for lab in range(self.label_shape[-1])]
+        
+    def build_model(self, load_model='last', seed=1234567890, arch=None):
+        ''' If load_model is 'last' load the most recent checkpoint (creates a new one if none are found), otherwise loads the specified one.
         '''
         if seed is not None:
             tf.random.set_seed(seed)
@@ -47,7 +51,7 @@ class DeepMRI():
         
         print("Using architecture: {}".format(arch.__name__))
         self.arch = arch
-        self.generator = arch.build_segmentor(self.mri_shape)
+        self.generator = arch.build_segmentor(self.mri_shape, seg_channels=self.label_shape[-1])
         self.discriminator = arch.build_critic(self.mri_shape, self.label_shape)
         self.g_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002)
         self.d_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002)
@@ -55,8 +59,20 @@ class DeepMRI():
         self.ckpt = tf.train.Checkpoint(generator=self.generator, discriminator=self.discriminator, g_optimizer=self.g_optimizer, d_optimizer=self.g_optimizer)
         last_ckpt = tf.train.latest_checkpoint(self.save_path)
         
-        self.train_metrics = Logger(self.save_path+'log_train.csv')
-        self.valid_metrics = Logger(self.save_path+'log_valid.csv')
+        self.tb_path_training = self.save_path+'tensorboard_log/training/'
+        self.tb_path_validation = self.save_path+'tensorboard_log/validation/'
+        os.makedirs(self.tb_path_training, exist_ok=True)
+        os.makedirs(self.tb_path_validation, exist_ok=True)
+        
+        self.tb_writer_t = tf.summary.create_file_writer(self.tb_path_training)
+        self.tb_writer_v = tf.summary.create_file_writer(self.tb_path_validation)
+        self.log_train_path = self.save_path + 'log_train.csv'
+        self.log_valid_path = self.save_path + 'log_valid.csv'
+        
+        
+        
+        #self.train_metrics = Logger(self.save_path+'log_train.csv')
+        #self.valid_metrics = Logger(self.save_path+'log_valid.csv')
         
         if load_model=='last' and last_ckpt is not None:
             print("Latest Checkpoint is: {}".format(last_ckpt))
@@ -67,29 +83,52 @@ class DeepMRI():
             if load_model != 'last':
                 print("Loading", load_model)
                 self.ckpt.restore(load_model)
-                
-                if last_ckpt is None:
-                    print("W: Your save path/modelname is different from the one you used to save the model.")
-                    if current_epoch is not None:
-                        self.train_metrics.load_from(os.path.dirname(load_model)+'/log_train.csv', at=current_epoch)
-                        self.valid_metrics.load_from(os.path.dirname(load_model)+'/log_valid.csv', at=current_epoch)
-                        self.current_epoch = self.train_metrics.get_next_epoch()
-                    else:
-                        print("W: You are importing a checkpoint with a different model name without indicating a starting epoch. Training history will be reset.")
-                    
-                else:
-                    self.current_epoch = self.train_metrics.get_next_epoch()
+                self.current_epoch = int(last_ckpt.split('-')[0].split('_')[-1]) + 1
                 print("Loaded model from: {}, next epoch: {}".format(load_model, self.current_epoch))
             else:
                 print("Created new model")
-            
         
+        if os.path.isfile(self.log_train_path):
+            self.log_train = pd.read_csv(self.log_train_path)
+            self.log_train = self.log_train[self.log_train['epoch']<self.current_epoch]
+        else:
+            self.log_train = pd.DataFrame()
+        if os.path.isfile(self.log_valid_path):
+            self.log_valid = pd.read_csv(self.log_valid_path)
+            self.log_valid = self.log_valid[self.log_valid['epoch']<self.current_epoch]
+        else:
+            self.log_valid = pd.DataFrame()
     
+    def set_training_dataset(self, dataset):
+        if self.train_dataset is not None:
+            print("Unloading previous dataset")
+            del self.train_dataset
+        self.train_dataset = dataset
+    
+    def set_validation_dataset(self, dataset):
+        if self.validation_dataset is not None:
+            print("Unloading previous dataset")
+            del self.validation_dataset
+        self.validation_dataset = dataset
+    
+    def set_testing_dataset(self, dataset):
+        if self.test_dataset is not None:
+            print("Unloading previous dataset")
+            del self.test_dataset
+        self.test_dataset = dataset
    
-    
-    def load_dataset(self, dataset, mri_types):
-        if dataset not in ['brats', 'bd2decide']:
-            raise NotImplementedError("Failed to load dataset {} with modalities {}".format(dataset, ','.join(mri_types)))
+    def load_dataset(self, dataset, mri_types, training_shuffle=True, training_random_crop=True, training_center_crop=False, testval_center_crop=True):
+        ''' 
+        Load the given datasets. 
+        :param dataset - A dict containing at least the keys 'training' and 'validation' ('testing' is optional). The values are the filenames of .tfrecords file for the given dataset (relative to ../datasets/, without .tfrecords extension)
+        :param mri_types - A list of MRI Modalities corresponding to the network input channel, as specified in the dataset feature columns.
+        
+        '''
+        self.mri_types = mri_types
+        
+        training_random_crop = list(self.mri_shape) if training_random_crop == True else None
+        training_center_crop = list(self.mri_shape) if training_center_crop == True else None
+        testval_center_crop = list(self.mri_shape) if testval_center_crop == True else None
         
         if any([d is not None for d in [self.train_dataset, self.validation_dataset, self.test_dataset]]):
             print("Unloading previous dataset")
@@ -97,74 +136,43 @@ class DeepMRI():
             del self.validation_dataset
             del self.test_dataset
             
-        
-        if dataset == 'bd2decide':
-            print("Loading dataset {} with modalities {}".format(dataset, ','.join(mri_types)))
-            self.train_dataset = lambda: dh.load_dataset('../datasets/BD2Decide-T1T2_training_crop_mri',
-                                    mri_type=mri_types,
-                                    random_crop=list(self.mri_shape),
-                                    batch_size=self.batch_size,
-                                    prefetch_buffer=1,
-                                    clip_labels_to=1.0,
-                                    infinite=False, 
-                                    cache=False
-                                    )
-
-            self.validation_dataset = lambda: dh.load_dataset('../datasets/BD2Decide-T1T2_validation_crop_mri',
-                                    mri_type=mri_types,
-                                    center_crop=list(self.mri_shape),
-                                    batch_size=self.batch_size,
-                                    prefetch_buffer=1,
-                                    clip_labels_to=1.0,
-                                    infinite=False,
-                                    cache=False,
-                                    shuffle=False
-                                    ) 
             
-            self.test_dataset =  lambda: dh.load_dataset('../datasets/BD2Decide-T1T2_testing_crop_mri',
-                                    mri_type=mri_types,
-                                    center_crop=list(self.mri_shape),
-                                    batch_size=self.batch_size,
-                                    prefetch_buffer=1,
-                                    clip_labels_to=1.0,
-                                    infinite=False,
-                                    cache=False,
-                                    shuffle=False
-                                    )
-        else:
-            if dataset == 'brats':
-                print("Loading dataset {} with modalities {}".format(dataset, ','.join(mri_types)) )
-                self.train_dataset = lambda: dh.load_dataset('../datasets/brats2015_training_crop_mri',
+        print("Loading training dataset {} with modalities {}".format(dataset['training'], ','.join(mri_types)))
+        self.train_dataset = lambda: dh.load_dataset(dataset['training'],
+                                mri_type=mri_types,
+                                clip_labels_to=self.output_labels,
+                                random_crop=training_random_crop,
+                                center_crop=training_center_crop,                 
+                                batch_size=self.batch_size,
+                                prefetch_buffer=1,
+                                infinite=False, 
+                                cache=False,
+                                shuffle=training_shuffle
+                                )
+        print("Loading training dataset {} with modalities {}".format(dataset['validation'], ','.join(mri_types)))
+        self.validation_dataset = lambda: dh.load_dataset(dataset['validation'],
                                         mri_type=mri_types,
-                                        random_crop=list(self.mri_shape),
+                                        clip_labels_to=self.output_labels,
+                                        center_crop=testval_center_crop,
                                         batch_size=self.batch_size,
                                         prefetch_buffer=1,
-                                        clip_labels_to=1.0,
                                         infinite=False, 
-                                        cache=False
+                                        cache=False,
+                                        shuffle=False
                                         )
+        if 'testing' in dataset:
+            print("Loading training dataset {} with modalities {}".format(dataset['testing'], ','.join(mri_types)))
+            self.test_dataset = lambda: dh.load_dataset(dataset['testing'],
+                                            mri_type=mri_types,
+                                            clip_labels_to=self.output_labels,
+                                            center_crop=testval_center_crop,
+                                            batch_size=self.batch_size,
+                                            prefetch_buffer=1,
+                                            infinite=False, 
+                                            cache=False,
+                                            shuffle=False
+                                                )
 
-                self.validation_dataset = lambda: dh.load_dataset('../datasets/brats2015_validation_crop_mri',
-                                                mri_type=mri_types,
-                                                center_crop=list(self.mri_shape),
-                                                batch_size=self.batch_size,
-                                                prefetch_buffer=1,
-                                                clip_labels_to=1.0,
-                                                infinite=False, 
-                                                cache=False,
-                                                shuffle=False
-                                                )
-                self.test_dataset = lambda: dh.load_dataset('../datasets/brats2015_testing_crop_mri',
-                                                mri_type=mri_types,
-                                                center_crop=list(self.mri_shape),
-                                                batch_size=self.batch_size,
-                                                prefetch_buffer=1,
-                                                clip_labels_to=1.0,
-                                                infinite=False, 
-                                                cache=False,
-                                                shuffle=False
-                                                )
-            
         self.train_dataset_length = None
         self.validation_dataset_length = None
         self.test_dataset_length = None
@@ -179,7 +187,7 @@ class DeepMRI():
     
     
     @tf.function
-    def compute_metrics(self, y_true, y_pred, g_loss, d_loss, threshold=0.5):
+    def compute_metrics(self, y_true, y_pred, threshold=0.5):
         # Boolean segmentation outputs
         # Condition Positive - real positive cases
         CP = tf.greater(y_true, threshold)  # Ground truth
@@ -195,8 +203,6 @@ class DeepMRI():
         FN = tf.math.count_nonzero(tf.math.logical_and(CP, PCN), axis=(1, 2))
         TN = tf.math.count_nonzero(tf.math.logical_and(CN, PCN), axis=(1, 2))
 
-        g_loss_rep = tf.tile([g_loss], [y_pred.shape[0]])
-        d_loss_rep = tf.tile([d_loss], [y_pred.shape[0]])
         # TPR/Recall/Sensitivity/HitRate, Probability of detection
         sensitivity = tf.where(tf.greater(TP+FN, 0), TP/(TP+FN), 1.0)
         # TNR/Specificity/Selectivity, Probability of false alarm
@@ -209,13 +215,9 @@ class DeepMRI():
         dice_score = tf.where(tf.greater(TP+FP+FN, 0), (2*TP)/(2*TP+FP+FN), 1.0)
         # (Balanced) Accuracy - Works with imbalanced datasets
         balanced_accuracy = (sensitivity + specificity)/2.0
-        
-        # For debugging the loss..
-        smooth_dice_loss = tf.tile([self.arch.smooth_dice_loss(y_true, y_pred)], [y_pred.shape[0]])
-        mae_distance = tf.reduce_mean(tf.metrics.mae(y_true,y_pred), axis=[2, 1])
                 
         # When editing this also edit the Logger class accordingly
-        return [g_loss_rep, d_loss_rep, sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy, smooth_dice_loss, mae_distance, TP, FP, FN, TN]
+        return [sensitivity, specificity, false_positive_rate, precision, dice_score, balanced_accuracy,  TP, FP, FN, TN]
         
         
     @tf.function
@@ -244,7 +246,7 @@ class DeepMRI():
             self.d_optimizer.apply_gradients(zip(d_gradients, self.discriminator.trainable_variables))
         del tape
 
-        return self.compute_metrics(y, g_output, g_loss, d_loss)
+        return [g_loss, d_loss], self.compute_metrics(y, g_output)
     
     @tf.function
     def validation_step(self, x, y):
@@ -253,8 +255,97 @@ class DeepMRI():
         d_fake = self.discriminator([x, g_output], training=False)
         g_loss = self.arch.loss_g(d_real, d_fake, g_output, y)
         d_loss = self.arch.loss_d(d_real, d_fake)
-        return self.compute_metrics(y, g_output, g_loss, d_loss)
+        return [g_loss, d_loss], self.compute_metrics(y, g_output)
+    
+    def log_step(self, log, row, losses, metrics):
+        stacked = np.stack([met.numpy().squeeze().astype(np.float32) for met in metrics], axis=1)
+        reshaped = np.reshape(stacked, (stacked.shape[0], stacked.shape[1]*stacked.shape[2]))
+        step_log = pd.DataFrame(reshaped, columns=self.log_column_names)
+        for t in self.mri_types:
+            step_log[t+'_path'] = [s.decode('utf-8') for s in row[t+'_path'].numpy()]
+        step_log['loss_g'] = losses[0].numpy()
+        step_log['loss_d'] = losses[1].numpy()
         
+        log = log.append(step_log, ignore_index=True)
+        return log
+            
+    
+    def log_epoch(self, slice_log, run, epoch_number, tracked_metric, tracked_metric_maximize=True, save_every_epochs=20):
+        ''' Calculates the metrics for each 3D volume for the full training or validation run. 
+        Writes the tensorboard writer and saves the best model on validation
+        :param slice_log - DataFrame containing the metrics for each slice processed in the current epoch
+        :param run - "training" or "validation", for writing to the corresponding logs
+        :param epoch_number - current epoch number, written on the log and on tensorboard graph
+        :param tracked_metric - Metric to track for saving the best model. If None, the model is saved at a regular interval governed by save_every_epoch
+        :param tracked_metric_maximize - Whether if the given tracked_metric is to be maximized or minimized. [Default: True]
+        :param save_every_epochs - Number of epochs between two save() calls. Has effect only if tracked_metric is None.'''
+        
+        if run == 'training':
+            epoch_log = self.log_train
+            tb_writer = self.tb_writer_t
+        if run == 'validation':
+            epoch_log = self.log_valid
+            tb_writer = self.tb_writer_v
+            
+        mri_groups = slice_log.groupby(['{}_path'.format(t) for t in self.mri_types])
+        sums = mri_groups.sum()
+        means = mri_groups.mean()
+        
+        per_mri_stats = pd.DataFrame()
+        for t in range(self.label_shape[-1]):
+            per_mri_stats['dice_score_{}'.format(t)] = 2.0*sums['true_positives_{}'.format(t)]/(2.0*sums['true_positives_{}'.format(t)] + sums['false_positives_{}'.format(t)] + sums['false_negatives_{}'.format(t)])
+            per_mri_stats['precision_{}'.format(t)] = sums['true_positives_{}'.format(t)]/(sums['true_positives_{}'.format(t)] + sums['false_positives_{}'.format(t)])
+            per_mri_stats['sensitivity_{}'.format(t)] = sums['true_positives_{}'.format(t)]/(sums['true_positives_{}'.format(t)] + sums['false_negatives_{}'.format(t)])
+        per_mri_stats['loss_g'] = means['loss_g']
+        per_mri_stats['loss_d'] = means['loss_d']
+        
+        # METRICS FOR BRATS2015 CHALLENGE
+        definitions = (('complete_tumor_2019', [1,2,4]), ('tumor_core_2019', [1,3,4]), ('complete_tumor', [1,2,3,4]), ('tumor_core', [1,3,4]), ('enhancing_tumor', [4]))
+        for chal_met, labs in definitions:
+            tp = sums.loc[:, sums.columns.isin(['true_positives_{}'.format(l) for l in labs])].sum(axis=1)
+            tn = sums.loc[:, sums.columns.isin(['true_negatives_{}'.format(l) for l in labs])].sum(axis=1)
+            fp = sums.loc[:, sums.columns.isin(['false_positives_{}'.format(l) for l in labs])].sum(axis=1)
+            fn = sums.loc[:, sums.columns.isin(['false_negatives_{}'.format(l) for l in labs])].sum(axis=1)
+            per_mri_stats['dice_score_{}'.format(chal_met)] = 2.0*tp/(2*tp + fp + fn)
+            per_mri_stats['precision_{}'.format(chal_met)] = tp/(tp + fp)
+            per_mri_stats['sensitivity_{}'.format(chal_met)] = tp/(tp + fn)
+
+        current_epoch_log = per_mri_stats.mean().to_frame().transpose()
+        current_epoch_log['epoch'] = epoch_number
+        
+        # Visualization and saving
+        if run in ['training', 'validation']:
+            with tb_writer.as_default():
+                for met in current_epoch_log.columns:
+                    if met == 'epoch':
+                        continue
+                    tf.summary.scalar(met, current_epoch_log[met].item(), step=epoch_number)
+                tb_writer.flush()
+
+
+            if run == 'validation':
+                if tracked_metric is not None:
+                    if len(epoch_log)==0 or \
+                       (tracked_metric_maximize and current_epoch_log[tracked_metric].item() >= epoch_log[tracked_metric].max()) or \
+                       (not tracked_metric_maximize and current_epoch_log[tracked_metric].item() <= epoch_log[tracked_metric].min()):
+                            print("Found new best model for {}, saving...".format(tracked_metric))
+                            self.ckpt.save(self.save_path+"best_{}_{}".format(tracked_metric, epoch_number))
+                            #self.log_prediction(epoch_number)
+                else:
+                    if epoch_number % save_every_epochs == 1:
+                        self.ckpt.save(self.save_path+"last_epoch_{}".format(epoch_number))
+                        #self.log_prediction(epoch_number)
+    
+        if run == 'training':
+            self.log_train = self.log_train.append(current_epoch_log, ignore_index=True)
+            self.log_train.to_csv(self.log_train_path)
+        if run == 'validation':
+            self.log_valid = self.log_valid.append(current_epoch_log, ignore_index=True)
+            self.log_valid.to_csv(self.log_valid_path)
+        if run == 'testing':
+            return current_epoch_log
+
+    
     def alternated_training(self, n_gen, n_disc, start_with='d'):
         '''
         Iterator returning a tuple (train_g, train_d) of Bools indicating if g or d has to be trained this step, in an alternated fashion.
@@ -281,9 +372,9 @@ class DeepMRI():
             yield tg, td
 
     
-    def train(self, alternating_steps=None, tracked_metrics=['dice_score']):
+    def train(self, alternating_steps=None, tracked_metric='dice_score', tracked_metric_maximize=True, save_every_epochs=20):
         ''' 
-            Train the network, saving metrics every epoch and saving the best model on the tracked metrics.
+            Train the network, saving metrics every epoch and saving the best model on the tracked metric.
             Supports alternating training. 
             :param alternating_steps: (steps_g, steps_d) or None. How many steps each network has to be trained before starting training the other. \
             If None, both network are trained each step on the same batch of data (train happens independently on G and D in any case).
@@ -291,10 +382,15 @@ class DeepMRI():
             If (1, 1), G is trained on X1, then D on X2, G on X3, D on X4...
             
         '''
+
         net_switch = self.alternated_training(alternating_steps[0], alternating_steps[1]) if alternating_steps is not None else None
-        
+               
         for e in range(self.current_epoch, self.max_epochs):
-            self.train_progress = tk.utils.Progbar(self.train_dataset_length, stateful_metrics=self.train_metrics.metrics_names)
+            # Logs that store metrics for each slice in the current epoch
+            training_logger = pd.DataFrame() 
+            validation_logger = pd.DataFrame()
+                        
+            self.train_progress = tk.utils.Progbar(self.train_dataset_length, stateful_metrics=['loss_g', 'loss_d'] + self.metrics_names)
             # Training Step
             for i, row in enumerate(self.train_dataset()):
                 # Alternated training
@@ -303,173 +399,72 @@ class DeepMRI():
                     train_g, train_d = True, True
                 else:
                     train_g, train_d = next(net_switch)
+                    
                 # Train step and metric logging
-                train_metrics = self.train_step(row['mri'], row['seg'], train_g=train_g, train_d=train_d)
-                self.train_metrics.update(train_metrics, self.train_progress, i)
-            self.train_dataset_length = i+1
-            
+                train_losses, train_metrics = self.train_step(row['mri'], row['seg'], train_g=train_g, train_d=train_d)
+                training_logger = self.log_step(training_logger, row, train_losses, train_metrics)
+                
+                self.train_progress.update(i, (('loss_g', train_losses[0]) , ('loss_d', train_losses[1])))
+            self.train_dataset_length = i + 1
+            self.log_epoch(training_logger, 'training', e, tracked_metric, tracked_metric_maximize, save_every_epochs)
             
             
             # Validation Step
-            self.valid_progress = tk.utils.Progbar(self.validation_dataset_length, stateful_metrics=self.valid_metrics.metrics_names)
+            self.valid_progress = tk.utils.Progbar(self.validation_dataset_length, stateful_metrics=self.metrics_names)
             for i, row in enumerate(self.validation_dataset()):
-                valid_metrics = self.validation_step(row['mri'], row['seg'])
-                self.valid_metrics.update(valid_metrics, self.valid_progress, i)
-            self.validation_dataset_length = i+1
-            # Updating the logs
-            epoch_train_metrics = self.train_metrics.on_epoch_end(e)
-            epoch_valid_metrics = self.valid_metrics.on_epoch_end(e)
+                valid_losses, valid_metrics = self.validation_step(row['mri'], row['seg'])
+                validation_logger = self.log_step(validation_logger, row, valid_losses, valid_metrics)
+                self.valid_progress.update(i, (('loss_g', valid_losses[0]) , ('loss_d', valid_losses[1])))
+            self.validation_dataset_length = i + 1
+            # Log validation epoch (and save if necessary)
+            self.log_epoch(validation_logger, 'validation', e, tracked_metric, tracked_metric_maximize, save_every_epochs)
             
-            # Saving the model if it's the best according some metrics
-            is_best = self.valid_metrics.is_best_model(tracked_metrics)
-            for m, best in zip(tracked_metrics, is_best):
-                if best:
-                    print("Found new best model for {}, saving...".format(m))
-                    if self.ref_sample is not None:
-                        self.show_prediction(self.ref_sample, save_to=self.save_path+self.model_name+"best_{}_{}.png".format(m, e))
-                    self.ckpt.save(self.save_path+"best_{}_{}".format(m, e))
                
-    def evaluate(self, csv_path, mri_types, dataset='validation'):
+    def evaluate(self, dataset='testing'):
         ''' 
         Evaluate the laoded model on the given dataset ('validation' or 'testing'). Dataset must be loaded beforehand.
         :param csv_path: csv to save the results 
         '''
         assert dataset in ['validation', 'testing']
-        eval_logger = Logger(csv_path)
         eval_dataset = self.validation_dataset if dataset == 'validation' else self.test_dataset
-        self.eval_progress = tk.utils.Progbar(None, stateful_metrics=eval_logger.metrics_names)
-        results = list()
-        paths = {t: list() for t in mri_types}
-        
+        eval_logger = pd.DataFrame()
+        self.eval_progress = tk.utils.Progbar(None, stateful_metrics=self.metrics_names)
+        # Testing Step
         for i, row in enumerate(eval_dataset()):
-            eval_metrics = self.validation_step(row['mri'], row['seg'])
-            results.append(np.stack([met.numpy().squeeze().astype(np.float32) for met in eval_metrics], axis=1))
-            eval_logger.update(eval_metrics, self.eval_progress, i)
-            for t in mri_types:
-                paths[t] += [s.decode('utf-8') for s in row[t+'_path'].numpy()]
-        # Preparing DataFrame
-        per_slice_stats = pd.DataFrame(np.concatenate(results), columns=eval_logger.metrics_names)
-        for t in mri_types:
-            per_slice_stats['path_{}'.format(t)] = paths[t]
-        per_slice_stats['model'] = self.model_name
-        per_slice_stats['run'] = dataset
-        return per_slice_stats
-        
-
-    def show_prediction(self, ref_sample, save_to, mri_index=0):
-        x, y = ref_sample
-        y_pred = self.generator([x[np.newaxis, :]], training=False)
-        
-        plt.figure()
-        plt.subplot(1, 3, 1)
-        plt.imshow(x[..., mri_index])
-        plt.subplot(1, 3, 2)
-        plt.imshow(y_pred[0,..., 0])
-        plt.subplot(1, 3, 3)
-        plt.imshow(y[..., 0])
-        plt.show()
-        if save_to is not None:
-            plt.savefig(save_to)
-        
-
-        
-class Logger():
-    ''' Class for keeping running average of the statistics and returns the metrics for the current epoch'''
-    def __init__(self, csv_path, start_from=None):
-        self.metrics_names = ['loss_g','loss_d','sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'smooth_dice_loss', 'mae', 'true_positives', 'false_positives', 'false_negatives', 'true_negatives']
-        # Criteria for determining under what condition a given metric value x is better then y.
-        self.criteria = {'loss_g': 'max',
-                         'loss_d': 'min',
-                         'sensitivity': 'max', # TP rate
-                         'specificity': 'max', # TN rate
-                         'false_positive_rate': 'min',
-                         'precision': 'max',
-                         'dice_score': 'max',
-                         'balanced_accuracy': 'max',
-                         'smooth_dice_loss':'min',
-                         'mae':'min', 
-                         'true_positives':'max',
-                         'false_positives':'min',
-                         'false_negatives':'min',
-                         'true_negatives':'max'}
-        
-        
-        self.batch_means = [tk.metrics.Mean() for name in self.metrics_names]
-        
-        self.csv_path = csv_path
-        if os.path.dirname(csv_path) != '':
-            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-        if os.path.isfile(csv_path):
-            self.history = pd.read_csv(csv_path)
-            print("Loaded history from {}".format(csv_path))
-        else:
-            self.history = pd.DataFrame(columns=['epoch']+self.metrics_names)
-        
+            eval_losses, eval_metrics = self.validation_step(row['mri'], row['seg'])
+            eval_logger = self.log_step(eval_logger, row, eval_losses, eval_metrics)
+            self.eval_progress.update(i, (('loss_g', eval_losses[0]) , ('loss_d', eval_losses[1])))
+        # Log validation epoch (and save if necessary)
+        return self.log_epoch(eval_logger, 'testing', 0, None)
     
-    def update(self, current_metrics, progressbar, pbar_step):
-        '''
-        Updates the metrics for the current epoch. Also updates a progressbar if provided.
-        current_metrics: a list of metrics. Keys have to match self.metrics_names
-        '''
-        # Update epoch averages
-        for name, mean, current in zip(self.metrics_names, self.batch_means, current_metrics):
-            mean.update_state(current)
-    
-        if progressbar is not None:
-            bar_metrics = list(zip(self.metrics_names, current_metrics))
-            progressbar.update(pbar_step, bar_metrics)
+#     def log_prediction(self, step):
+#         print("Displaying predictions on TB...")
+#         with self.tb_writer_v.as_default():
+#             preds = list()
+#             gts = list()
+            
+#             for batch, row in enumerate(self.validation_dataset()):
+#                 if self.output_labels == 1:
+#                     pred = self.generator(row['mri'], training=False)
+#                     gt = row['seg']
+#                 else:
+#                     pred = tf.argmax(self.generator(row['mri'], training=False), axis=-1)[..., tf.newaxis]
+#                     gt = tf.argmax(row['seg'], axis=-1)[..., tf.newaxis]
+#                 tf.summary.image('GT_batch_{}'.format(batch), gt, step=step)
+#                 tf.summary.image('PRED_batch_{}'.format(batch), pred, step=step)
+#             self.tb_writer_v.flush()
+                
+#     def show_prediction(self, ref_sample, save_to, mri_index=0):
+#         x, y = ref_sample
+#         y_pred = self.generator([x[np.newaxis, :]], training=False)
         
-    def on_epoch_end(self, current_epoch):
-        """
-        Update the history with the averages of the last epoch and initializes a new one.
-        """
-        results = [mean.result().numpy() for mean in self.batch_means]
-        for mean in self.batch_means:
-            mean.reset_states()
-        # Update and save the history
-        update_dict = dict(zip(self.metrics_names, results))
-        update_dict['epoch'] = current_epoch
-        update_dict['datetime'] = datetime.datetime.now()
-        self.history = self.history.append(update_dict, ignore_index=True)
-        self.save()
-        return results
-    
-    def is_best_model(self, metrics):
-        ''' Returns whether the last registered epoch is the best according to the given list of metrics.'''
-        results = list()
-        for m in metrics:
-            last_entry = self.history[m].tail(1)
-            past_entries = self.history[m].iloc[:len(self.history[m])-1]
-            if self.criteria[m] == 'min':
-                best = (last_entry <= past_entries.min()).values.item()
-            elif self.criteria[m] == 'max':
-                best = (last_entry >= past_entries.max()).values.item()
-            results.append(best)
-        return results
-        
-    def get_next_epoch(self):
-        '''Returns the last logged epoch index. 
-        This is needed since TF checkpoint keeps tracks of the epoch only when saving the best model, but we keep track of every epoch '''
-        if len(self.history) > 0:
-            return int(self.history.tail(1)['epoch']) + 1
-        else:
-            return 0
-        
-        
-    def load_from(self, csv_path, at):
-        ''' Imports an history log from csv truncating it after <at> epochs. Use this function when loading a checkpoint into a new model and you want to keep previous history'''
-        self.history = pd.read_csv(csv_path)
-        self.history = self.history[self.history['epoch'] <= at]
-        print("Imported history from {} at epoch {}".format(csv_path, at))
-        
-        
-    def save(self, csv_path=None):
-        path = csv_path or self.csv_path
-        self.history.to_csv(self.csv_path, index=False)
-        
-        
-        
-        
-        
-        
-        
+#         plt.figure()
+#         plt.subplot(1, 3, 1)
+#         plt.imshow(x[..., mri_index])
+#         plt.subplot(1, 3, 2)
+#         plt.imshow(y_pred[0,..., 0])
+#         plt.subplot(1, 3, 3)
+#         plt.imshow(y[..., 0])
+#         plt.show()
+#         if save_to is not None:
+#             plt.savefig(save_to)
