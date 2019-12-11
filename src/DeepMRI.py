@@ -40,7 +40,7 @@ class DeepMRI():
         self.metrics_names = ['sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'true_positives', 'false_positives', 'false_negatives', 'true_negatives']
         self.log_column_names = [met+'_'+str(lab) for met in self.metrics_names for lab in range(self.label_shape[-1])]
         
-    def build_model(self, load_model='last', seed=1234567890, arch=None):
+    def build_model(self, load_model='last', seed=1234567890, arch=None, g_opt=None, d_opt=None):
         ''' If load_model is 'last' load the most recent checkpoint (creates a new one if none are found), otherwise loads the specified one.
         '''
         if seed is not None:
@@ -53,8 +53,8 @@ class DeepMRI():
         self.arch = arch
         self.generator = arch.build_segmentor(self.mri_shape, seg_channels=self.label_shape[-1])
         self.discriminator = arch.build_critic(self.mri_shape, self.label_shape)
-        self.g_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002)
-        self.d_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002)
+        self.g_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002) if g_opt is None else g_opt
+        self.d_optimizer = tf.optimizers.RMSprop(learning_rate=0.00002) if d_opt is None else d_opt
         
         self.ckpt = tf.train.Checkpoint(generator=self.generator, discriminator=self.discriminator, g_optimizer=self.g_optimizer, d_optimizer=self.g_optimizer)
         last_ckpt = tf.train.latest_checkpoint(self.save_path)
@@ -265,7 +265,8 @@ class DeepMRI():
             step_log[t+'_path'] = [s.decode('utf-8') for s in row[t+'_path'].numpy()]
         step_log['loss_g'] = losses[0].numpy()
         step_log['loss_d'] = losses[1].numpy()
-        
+        step_log['learning_rate_g'] = self.g_optimizer.lr.numpy()
+        step_log['learning_rate_d'] = self.d_optimizer.lr.numpy()
         log = log.append(step_log, ignore_index=True)
         return log
             
@@ -298,6 +299,8 @@ class DeepMRI():
             per_mri_stats['sensitivity_{}'.format(t)] = sums['true_positives_{}'.format(t)]/(sums['true_positives_{}'.format(t)] + sums['false_negatives_{}'.format(t)])
         per_mri_stats['loss_g'] = means['loss_g']
         per_mri_stats['loss_d'] = means['loss_d']
+        per_mri_stats['learning_rate_g'] = means['learning_rate_g']
+        per_mri_stats['learning_rate_d'] = means['learning_rate_d']
         
         # METRICS FOR BRATS2015 CHALLENGE
         definitions = (('complete_tumor_2019', [1,2,4]), ('tumor_core_2019', [1,3,4]), ('complete_tumor', [1,2,3,4]), ('tumor_core', [1,3,4]), ('enhancing_tumor', [4]))
