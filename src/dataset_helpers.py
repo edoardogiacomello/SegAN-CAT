@@ -397,8 +397,10 @@ def load_dataset(name, mri_type, clip_labels_to, center_crop=None, random_crop=N
             # Clipping the labels to the given maximum value
             parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to)
             
-            # One_hot encoding for the segmentation (Discarding Null label)
-            parsed['seg'] = tf.one_hot(tf.cast(parsed['seg'], tf.int32)[...,0], clip_labels_to+1)
+            # One_hot encoding for the segmentation
+            if clip_labels_to > 1:
+                # We add a null label only if the output labels are >1
+                parsed['seg'] = tf.one_hot(tf.cast(parsed['seg'], tf.int32)[...,0], clip_labels_to+1)
             
             # Cropping (With ground truth)
             if random_crop or center_crop:

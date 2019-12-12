@@ -259,7 +259,10 @@ class DeepMRI():
     
     def log_step(self, log, row, losses, metrics):
         stacked = np.stack([met.numpy().squeeze().astype(np.float32) for met in metrics], axis=1)
-        reshaped = np.reshape(stacked, (stacked.shape[0], stacked.shape[1]*stacked.shape[2]))
+        if self.output_labels > 1:
+            reshaped = np.reshape(stacked, (stacked.shape[0], stacked.shape[1]*stacked.shape[2]))
+        else:
+            reshaped = stacked
         step_log = pd.DataFrame(reshaped, columns=self.log_column_names)
         for t in self.mri_types:
             step_log[t+'_path'] = [s.decode('utf-8') for s in row[t+'_path'].numpy()]
