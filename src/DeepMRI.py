@@ -136,10 +136,11 @@ class DeepMRI():
             del self.validation_dataset
             del self.test_dataset
             
-            
+        
         print("Loading training dataset {} with modalities {}".format(dataset['training'], ','.join(mri_types)))
         self.train_dataset = lambda: dh.load_dataset(dataset['training'],
                                 mri_type=mri_types,
+                                ground_truth_column_name='seg' if 'brats2019' in dataset['training'] else "OT",
                                 clip_labels_to=self.output_labels,
                                 random_crop=training_random_crop,
                                 center_crop=training_center_crop,                 
@@ -152,6 +153,7 @@ class DeepMRI():
         print("Loading training dataset {} with modalities {}".format(dataset['validation'], ','.join(mri_types)))
         self.validation_dataset = lambda: dh.load_dataset(dataset['validation'],
                                         mri_type=mri_types,
+                                        ground_truth_column_name='seg' if 'brats2019' in dataset['validation'] else "OT",
                                         clip_labels_to=self.output_labels,
                                         center_crop=testval_center_crop,
                                         batch_size=self.batch_size,
@@ -164,6 +166,7 @@ class DeepMRI():
             print("Loading training dataset {} with modalities {}".format(dataset['testing'], ','.join(mri_types)))
             self.test_dataset = lambda: dh.load_dataset(dataset['testing'],
                                             mri_type=mri_types,
+                                            ground_truth_column_name='seg' if 'brats2019' in dataset['testing'] else "OT",
                                             clip_labels_to=self.output_labels,
                                             center_crop=testval_center_crop,
                                             batch_size=self.batch_size,
@@ -442,35 +445,4 @@ class DeepMRI():
             self.eval_progress.update(i, (('loss_g', eval_losses[0]) , ('loss_d', eval_losses[1])))
         # Log validation epoch (and save if necessary)
         return self.log_epoch(eval_logger, 'testing', 0, None)
-    
-#     def log_prediction(self, step):
-#         print("Displaying predictions on TB...")
-#         with self.tb_writer_v.as_default():
-#             preds = list()
-#             gts = list()
-            
-#             for batch, row in enumerate(self.validation_dataset()):
-#                 if self.output_labels == 1:
-#                     pred = self.generator(row['mri'], training=False)
-#                     gt = row['seg']
-#                 else:
-#                     pred = tf.argmax(self.generator(row['mri'], training=False), axis=-1)[..., tf.newaxis]
-#                     gt = tf.argmax(row['seg'], axis=-1)[..., tf.newaxis]
-#                 tf.summary.image('GT_batch_{}'.format(batch), gt, step=step)
-#                 tf.summary.image('PRED_batch_{}'.format(batch), pred, step=step)
-#             self.tb_writer_v.flush()
-                
-#     def show_prediction(self, ref_sample, save_to, mri_index=0):
-#         x, y = ref_sample
-#         y_pred = self.generator([x[np.newaxis, :]], training=False)
-        
-#         plt.figure()
-#         plt.subplot(1, 3, 1)
-#         plt.imshow(x[..., mri_index])
-#         plt.subplot(1, 3, 2)
-#         plt.imshow(y_pred[0,..., 0])
-#         plt.subplot(1, 3, 3)
-#         plt.imshow(y[..., 0])
-#         plt.show()
-#         if save_to is not None:
-#             plt.savefig(save_to)
+  
