@@ -150,7 +150,7 @@ class DeepMRI():
                                 cache=False,
                                 shuffle=training_shuffle
                                 )
-        print("Loading training dataset {} with modalities {}".format(dataset['validation'], ','.join(mri_types)))
+        print("Loading validation dataset {} with modalities {}".format(dataset['validation'], ','.join(mri_types)))
         self.validation_dataset = lambda: dh.load_dataset(dataset['validation'],
                                         mri_type=mri_types,
                                         ground_truth_column_name='seg' if 'brats2019' in dataset['validation'] else "OT",
@@ -163,7 +163,7 @@ class DeepMRI():
                                         shuffle=False
                                         )
         if 'testing' in dataset:
-            print("Loading training dataset {} with modalities {}".format(dataset['testing'], ','.join(mri_types)))
+            print("Loading testing dataset {} with modalities {}".format(dataset['testing'], ','.join(mri_types)))
             self.test_dataset = lambda: dh.load_dataset(dataset['testing'],
                                             mri_type=mri_types,
                                             ground_truth_column_name='seg' if 'brats2019' in dataset['testing'] else "OT",
