@@ -40,7 +40,7 @@ class DeepMRI():
         self.metrics_names = ['sensitivity','specificity','false_positive_rate','precision','dice_score','balanced_accuracy', 'true_positives', 'false_positives', 'false_negatives', 'true_negatives']
         self.log_column_names = [met+'_'+str(lab) for met in self.metrics_names for lab in range(self.label_shape[-1])]
         
-    def build_model(self, load_model='last', seed=1234567890, arch=None, g_opt=None, d_opt=None):
+    def build_model(self, load_model='last', transfer=False, seed=1234567890, arch=None, g_opt=None, d_opt=None):
         ''' If load_model is 'last' load the most recent checkpoint (creates a new one if none are found), otherwise loads the specified one.
         '''
         if seed is not None:
@@ -83,8 +83,12 @@ class DeepMRI():
             if load_model != 'last':
                 print("Loading", load_model)
                 self.ckpt.restore(load_model)
-                self.current_epoch = int(last_ckpt.split('-')[0].split('_')[-1]) + 1
-                print("Loaded model from: {}, next epoch: {}".format(load_model, self.current_epoch))
+                if transfer:
+                    self.current_epoch = 0
+                    print("Transfering model from: {}, next epoch: {}".format(load_model, self.current_epoch))
+                else:
+                    self.current_epoch = int(load_model.split('-')[0].split('_')[-1]) + 1
+                    print("Resuming model from: {}, next epoch: {}".format(load_model, self.current_epoch))
             else:
                 print("Created new model")
         
@@ -381,7 +385,7 @@ class DeepMRI():
             yield tg, td
 
     
-    def train(self, alternating_steps=None, tracked_metric='dice_score', tracked_metric_maximize=True, save_every_epochs=20):
+    def train(self, alternating_steps=None, tracked_metric='dice_score', tracked_metric_maximize=True, save_every_epochs=20, max_epochs=None):
         ''' 
             Train the network, saving metrics every epoch and saving the best model on the tracked metric.
             Supports alternating training. 
@@ -427,6 +431,11 @@ class DeepMRI():
             self.validation_dataset_length = i + 1
             # Log validation epoch (and save if necessary)
             self.log_epoch(validation_logger, 'validation', e, tracked_metric, tracked_metric_maximize, save_every_epochs)
+            
+            if max_epochs is not None:
+                if e > max_epochs:
+                    print("Max epochs reached, terminating...")
+                    break
             
                
     def evaluate(self, dataset='testing'):
