@@ -273,8 +273,9 @@ class DeepMRI():
         step_log = pd.DataFrame(reshaped, columns=self.log_column_names)
         for t in self.mri_types:
             step_log[t+'_path'] = [s.decode('utf-8') for s in row[t+'_path'].numpy()]
-        step_log['loss_g'] = losses[0].numpy()
-        step_log['loss_d'] = losses[1].numpy()
+        if losses is not None:
+            step_log['loss_g'] = losses[0].numpy()
+            step_log['loss_d'] = losses[1].numpy()
         step_log['learning_rate_g'] = self.g_optimizer.lr.numpy()
         step_log['learning_rate_d'] = self.d_optimizer.lr.numpy()
         log = log.append(step_log, ignore_index=True)
@@ -440,18 +441,26 @@ class DeepMRI():
                
     def evaluate(self, dataset='testing'):
         ''' 
-        Evaluate the laoded model on the given dataset ('validation' or 'testing'). Dataset must be loaded beforehand.
+        Evaluate the laoded model on the given dataset ('validation',  'testing' or 'merged'). Dataset must be loaded beforehand.
         :param csv_path: csv to save the results 
         '''
-        assert dataset in ['validation', 'testing']
-        eval_dataset = self.validation_dataset if dataset == 'validation' else self.test_dataset
+        assert dataset in ['validation', 'testing', 'merged']
+        if dataset == 'validation':
+            eval_dataset = [self.validation_dataset]
+        if dataset == 'testing':
+            eval_dataset = [self.test_dataset]
+        if dataset == 'merged':
+            eval_dataset = [self.validation_dataset, self.test_dataset]
+        
         eval_logger = pd.DataFrame()
         self.eval_progress = tk.utils.Progbar(None, stateful_metrics=self.metrics_names)
-        # Testing Step
-        for i, row in enumerate(eval_dataset()):
-            eval_losses, eval_metrics = self.validation_step(row['mri'], row['seg'])
-            eval_logger = self.log_step(eval_logger, row, eval_losses, eval_metrics)
-            self.eval_progress.update(i, (('loss_g', eval_losses[0]) , ('loss_d', eval_losses[1])))
+        # Evaluation
+        for dataset_split in eval_dataset:
+            for i, row in enumerate(dataset_split()):
+                eval_losses, eval_metrics = self.validation_step(row['mri'], row['seg'])
+                eval_logger = self.log_step(eval_logger, row, eval_losses, eval_metrics)
+                self.eval_progress.update(i, (('loss_g', eval_losses[0]) , ('loss_d', eval_losses[1])))
+        
         # Log validation epoch (and save if necessary)
         return self.log_epoch(eval_logger, 'testing', 0, None)
   
