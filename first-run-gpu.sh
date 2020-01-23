@@ -4,7 +4,5 @@ then    CONTAINER_NAME="--name $1";  echo "After you exit the container you can 
 else    CONTAINER_NAME="";
 fi
 echo "Mapping container port 8888 to host port 8889"
-DEVICE="gpu"
-nvidia-docker run -p 8887:8888 -v $PWD/../datasets/:/home/datasets/:ro -v $PWD:/home/DeepMRI $CONTAINER_NAME -it edoardogiacomello/deepmri:latest-$DEVICE
-
+nvidia-docker run -p 8887:8888 -p 6006:6006 -v $PWD/../datasets/:/tf/datasets/:ro -v $PWD:/tf/DeepMRI --name=deepmri2 -it edoardogiacomello/deepmri:latest-gpu
 
