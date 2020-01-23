@@ -1,1 +1,1 @@
-docker build -t edoardogiacomello/deepmri:latest-cpu --build-arg TF_TAG=latest-py3 .
+docker build -t edoardogiacomello/deepmri:latest-cpu dockerfiles/TF2/cpu/
