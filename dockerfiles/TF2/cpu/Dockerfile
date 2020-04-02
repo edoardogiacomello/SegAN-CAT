@@ -1,4 +1,4 @@
-ARG TF_TAG=2.0.0-py3
+ARG TF_TAG=2.0.0b1-py3
 FROM tensorflow/tensorflow:$TF_TAG
 WORKDIR /tf
 RUN apt-get update
