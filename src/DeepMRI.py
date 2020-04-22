@@ -121,11 +121,13 @@ class DeepMRI():
             del self.test_dataset
         self.test_dataset = dataset
    
-    def load_dataset(self, dataset, mri_types, training_shuffle=True, training_random_crop=True, training_center_crop=False, testval_center_crop=True):
+    def load_dataset(self, dataset, mri_types, training_shuffle=True, training_random_crop=True, training_center_crop=False, testval_center_crop=True, gt_channels='WT'):
         ''' 
         Load the given datasets. 
         :param dataset - A dict containing at least the keys 'training' and 'validation' ('testing' is optional). The values are the filenames of .tfrecords file for the given dataset (relative to ../datasets/, without .tfrecords extension)
         :param mri_types - A list of MRI Modalities corresponding to the network input channel, as specified in the dataset feature columns.
+        :param label_mode - How to represent the labels in the resulting dataset: 'whole_tumor' outputs 1 for all the pixels that are not zero. 'all' will output each  'None' will output the unaltered values.
+        :param gt_labels: Either None (returns unaltered labels), 'WT' (whole tumor - clip the labels to 1), or a list of labels ('OTH', 'NCR2015', 'ED', 'NET2015', 'ET', 'NCR/NET') defining the output channels.
         
         '''
         self.mri_types = mri_types
@@ -133,6 +135,12 @@ class DeepMRI():
         training_random_crop = list(self.mri_shape) if training_random_crop == True else None
         training_center_crop = list(self.mri_shape) if training_center_crop == True else None
         testval_center_crop = list(self.mri_shape) if testval_center_crop == True else None
+        
+        if gt_channels == 'WT':
+            gt_channels = None
+            lab_clipping = self.output_labels
+        else:
+            lab_clipping = 0
         
         if any([d is not None for d in [self.train_dataset, self.validation_dataset, self.test_dataset]]):
             print("Unloading previous dataset")
@@ -144,8 +152,9 @@ class DeepMRI():
         print("Loading training dataset {} with modalities {}".format(dataset['training'], ','.join(mri_types)))
         self.train_dataset = lambda: dh.load_dataset(dataset['training'],
                                 mri_type=mri_types,
+                                gt_channels=gt_channels,
                                 ground_truth_column_name='seg' if 'brats2019' in dataset['training'] else "OT",
-                                clip_labels_to=self.output_labels,
+                                clip_labels_to=lab_clipping,
                                 random_crop=training_random_crop,
                                 center_crop=training_center_crop,                 
                                 batch_size=self.batch_size,
@@ -157,8 +166,9 @@ class DeepMRI():
         print("Loading validation dataset {} with modalities {}".format(dataset['validation'], ','.join(mri_types)))
         self.validation_dataset = lambda: dh.load_dataset(dataset['validation'],
                                         mri_type=mri_types,
+                                        gt_channels=gt_channels,
                                         ground_truth_column_name='seg' if 'brats2019' in dataset['validation'] else "OT",
-                                        clip_labels_to=self.output_labels,
+                                        clip_labels_to=lab_clipping,
                                         center_crop=testval_center_crop,
                                         batch_size=self.batch_size,
                                         prefetch_buffer=1,
@@ -170,8 +180,9 @@ class DeepMRI():
             print("Loading testing dataset {} with modalities {}".format(dataset['testing'], ','.join(mri_types)))
             self.test_dataset = lambda: dh.load_dataset(dataset['testing'],
                                             mri_type=mri_types,
+                                            gt_channels=gt_channels,
                                             ground_truth_column_name='seg' if 'brats2019' in dataset['testing'] else "OT",
-                                            clip_labels_to=self.output_labels,
+                                            clip_labels_to=lab_clipping,
                                             center_crop=testval_center_crop,
                                             batch_size=self.batch_size,
                                             prefetch_buffer=1,

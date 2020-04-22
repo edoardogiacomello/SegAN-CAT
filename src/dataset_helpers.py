@@ -356,11 +356,13 @@ def pack_dataset(file_paths, dataset_name, dataset_suffix, dataset_min, dataset_
         print("Samples written to {}")
 
 
-def load_dataset(name, mri_type, clip_labels_to, center_crop=None, random_crop=None, ground_truth_column_name="seg", filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
+def load_dataset(name, mri_type, gt_channels=None, clip_labels_to=0, center_crop=None, random_crop=None, ground_truth_column_name="seg", filter=None, batch_size=32, cache=True, prefetch_buffer=1, shuffle_buffer=128, interleave=1, cast_to=tf.float32, take_only=None, shuffle=True, infinite=False, n_threads=os.cpu_count()):
     '''
-    Load a tensorflow dataset <name> (see definition in dataset_helpers).
+    Load a tensorflow dataset <name> (see definition in dataset_helpers), eventually selecting particular MRI modalities and processing desired labels. 
+    
     :param name: Name of the dataset
     :param mri_type: list of MRI sequencing to include in the dataset. Each modality will form a new channel in the resulting sample.
+    :param gt_channels: Either None (returns unaltered labels) or a list of labels ('OTH', 'NCR2015', 'ED', 'NET2015', 'ET', 'NCR/NET') defining the output channels. Defaults to None.
     :param ground_truth_column_name: Column name of the ground truth. "OT" for Brats2015, "seg" for Brats2019, None for challenge testing sets.
     :param filter: Lambda expression for filtering the data
     :param batch_size: batch size of the returned tensors
@@ -369,13 +371,17 @@ def load_dataset(name, mri_type, clip_labels_to, center_crop=None, random_crop=N
     :param interleave: If true, subsequent calls to the iterator will generate <interleave> equal batches. Eg. if 3, batch returned will be [A A A B B B ....]
     :param cast_to: [tf.float32] cast image data to this dtype
     :param only_nonempty_labels: [True] If true, filters all the samples that have a completely black (0.0) label map (segmentation)
-    :param clip_labels_to: [0.0] If > 0, clips all the segmentation labels to the provided value. eg. providing a 1 yould produce a segmentation with only 0 and 1 values
+    :param clip_labels_to: [0.0] If > 0, clips all the segmentation labels to the provided value. Has effect ONLY if gt_channels is None.
     :param take_only: [None] If > 0, only returns <take_only> samples from the given dataset before starting a new iteration.
     :return:
     '''
     
     
+    
     def parse_sample(sample_proto):
+        label_values= {'OTH':0.0, 'NCR2015':1.0, 'ED':2.0, 'NET2015':3.0, 'NCR/NET':1.0, 'ET':4.0}
+        
+        
         if ground_truth_column_name:
             features_description = get_feature_description([ground_truth_column_name]+mri_type)
         else:
@@ -394,14 +400,22 @@ def load_dataset(name, mri_type, clip_labels_to, center_crop=None, random_crop=N
         if ground_truth_column_name is not None:
             parsed['seg'] = tf.cast(tf.reshape(tf.io.decode_raw(parsed[ground_truth_column_name+'_mri'], tf.float32), shape=slice_shape), dtype=cast_to)
             
-            # Clipping the labels to the given maximum value
-            parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to)
-            
-            # One_hot encoding for the segmentation
-            if clip_labels_to > 1:
-                # We add a null label only if the output labels are >1
-                parsed['seg'] = tf.one_hot(tf.cast(parsed['seg'], tf.int32)[...,0], clip_labels_to+1)
-            
+            if gt_channels is None:
+                if clip_labels_to > 0:
+                    # Clipping the labels to the given maximum value
+                    parsed['seg'] = tf.clip_by_value(parsed['seg'], 0.0, clip_labels_to)
+
+                    # One_hot encoding for the segmentation
+                    if clip_labels_to > 1:
+                        # We add a null label only if the output labels are >1
+                        parsed['seg'] = tf.one_hot(tf.cast(parsed['seg'], tf.int32)[...,0], clip_labels_to+1)
+            else:
+                # Decoding GT channels
+                lab_channels = list()
+                for lab in gt_channels:
+                    lab_channels.append(tf.cast(tf.equal(parsed['seg'], label_values[lab]), tf.float32))
+                parsed['seg'] = tf.concat(lab_channels, axis=-1)
+                
             # Cropping (With ground truth)
             if random_crop or center_crop:
                 # Stacking the mri and the label to align the crop shape
