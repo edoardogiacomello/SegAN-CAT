@@ -1,0 +1,4 @@
+python train_seganio_on_brats_all_2019_ET.py;
+python train_seganio_on_brats_all_2019_ED.py;
+python train_seganio_on_brats_all_2019_NCRNET.py;
+python train_seganio_on_brats_all_2019v2.py;
